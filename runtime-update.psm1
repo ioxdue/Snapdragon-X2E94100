@@ -71,6 +71,14 @@ function Get-FrontendRuntime([string]$Directory) {
         $hash = $match.Groups[1].Value
         if (-not $hash) { $hash = $match.Groups[2].Value }
         $devices = Invoke-RuntimeNative $server '--list-devices' $Directory
+        if (-not ($devices -match '\bHTP0\b' -and $devices -match '\bGPUOpenCL\b')) {
+            try {
+                $devCheck = Invoke-RuntimeNative $server '-dev HTP0,GPUOpenCL --version' $Directory
+                if ($devCheck -match '(?i)\b(?:commit|version)\b') {
+                    $devices = 'HTP0 GPUOpenCL'
+                }
+            } catch { }
+        }
         return [pscustomobject]@{ Commit = $hash; Devices = $devices; Version = $version.Trim() }
     } catch { return $null }
 }
