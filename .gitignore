@@ -6,3 +6,6 @@ hexagon-models.ini
 *.tmp
 __pycache__/
 *.pyc
+
+# Corpus, risposte e telemetria del test hardware di contesto lungo
+long-context-results/

@@ -59,6 +59,7 @@ Il vecchio aggiornamento automatico del commit `dbbb499` non deve essere usato s
 
 - [Precondizioni di compatibilità e procedura di verifica](docs/COMPATIBILITA.md)
 - [Benchmark storici, con limitazioni metodologiche](BENCHMARK.md)
+- [Test hardware oltre 64k: input effettivo, recupero e attivita' NPU](docs/LONG_CONTEXT_NPU.md)
 - [Launcher](launch-hexagon.ps1) · [Benchmark](benchmark-hexagon.ps1) · [Sincronizzatore sperimentale](sync-geniex.ps1)
 
 ## Architettura: due percorsi distinti
