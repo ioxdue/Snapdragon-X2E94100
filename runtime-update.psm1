@@ -37,12 +37,19 @@ function Invoke-RuntimeNative([string]$File, [string]$Arguments, [string]$Direct
 }
 
 function Get-GenieRuntime([string]$GenieXDir) {
-    $exe = Join-Path $GenieXDir 'geniex.exe'
-    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+    $defaultGenie = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'GenieX CLI')).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $normalizedGenie = if ($GenieXDir) { [IO.Path]::GetFullPath($GenieXDir).TrimEnd([IO.Path]::DirectorySeparatorChar) } else { '' }
+    $exe = if ($GenieXDir) { Join-Path $GenieXDir 'geniex.exe' } else { '' }
+    $exeExists = if ($exe) { Test-Path -LiteralPath $exe -PathType Leaf } else { $false }
+    if (-not $exeExists -and (-not $GenieXDir -or $normalizedGenie -eq $defaultGenie)) {
         $command = Get-Command geniex.exe -ErrorAction SilentlyContinue
-        if ($command) { $exe = $command.Source; $GenieXDir = Split-Path -Parent $exe }
+        if ($command) {
+            $exe = $command.Source
+            $GenieXDir = Split-Path -Parent $exe
+            $exeExists = Test-Path -LiteralPath $exe -PathType Leaf
+        }
     }
-    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Installare GenieX CLI Qualcomm: geniex.exe non trovato in $GenieXDir o nel PATH." }
+    if (-not $exeExists) { throw "Installare GenieX CLI Qualcomm: geniex.exe non trovato in $GenieXDir o nel PATH." }
     $version = Invoke-RuntimeNative $exe '--version --skip-update' $GenieXDir
     $hash = [regex]::Match($version, 'LlamaCPP Runtime Hash:\s*([a-fA-F0-9]{7,40})\b').Groups[1].Value
     if (-not $hash) { throw 'GenieX non ha restituito un LlamaCPP Runtime Hash valido.' }
