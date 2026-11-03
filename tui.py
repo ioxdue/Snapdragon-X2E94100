@@ -205,6 +205,8 @@ SLASH_COMMANDS = {
     "/new": "Sinonimo di /clear (avvia una nuova sessione)",
     "/system": "Visualizza o imposta il system prompt attivo",
     "/temp": "Imposta la temperatura di campionamento (es. /temp 0.2)",
+    "/maxtokens": "Imposta il limite massimo di token generati (es. /maxtokens 4096)",
+    "/reasoning": "Imposta ragionamento off oppure auto (scelta del server)",
     "/tokens": "Analisi utilizzo token e percentuale finestra di contesto",
     "/server": "Stato e controllo del server locale (status, start, stop)",
     "/exit": "Esci da Hexagon Claw TUI",
@@ -275,6 +277,7 @@ class HexagonClawTUI:
         system_prompt: Optional[str] = None,
         workspace_dir: Optional[Path] = None,
         max_tokens: int = 2048,
+        reasoning: str = "off",
     ):
         self.base_url = base_url.rstrip("/")
         url = urlsplit(self.base_url)
@@ -284,6 +287,9 @@ class HexagonClawTUI:
         if max_tokens <= 0:
             raise ValueError("max_tokens deve essere positivo")
         self.max_tokens = max_tokens
+        if reasoning not in ("off", "auto"):
+            raise ValueError("reasoning deve essere off oppure auto")
+        self.reasoning = reasoning
         self.workspace_dir = Path(workspace_dir or DEFAULT_WORKSPACE).resolve()
         self.ini_path = self.workspace_dir / "hexagon-models.ini"
 
@@ -407,6 +413,9 @@ class HexagonClawTUI:
     # -----------------------------------------------------------------------
     def _chat_events(self, body):
         body = {**body, "stream": True, "stream_options": {"include_usage": True}}
+        if self.reasoning == "off":
+            # llama.cpp: disable thinking per request, rather than only hiding it.
+            body["reasoning_effort"] = "none"
         with self.http.stream("POST", f"{self.base_url}/chat/completions", json=body) as response:
             if response.status_code != 200:
                 detail = response.read().decode("utf-8", errors="replace")
@@ -439,10 +448,13 @@ class HexagonClawTUI:
         timings, usage = {}, {}
         finish_reason = None
         display_thinking = False
+        reasoning_seen = False
         t0 = time.perf_counter()
 
         def display(thinking, piece):
-            nonlocal display_thinking
+            nonlocal display_thinking, reasoning_seen
+            if thinking and piece.strip():
+                reasoning_seen = True
             if thinking != display_thinking:
                 self.console.print("\n🧠 Ragionamento:" if thinking else "\nRisposta:", style="dim")
                 display_thinking = thinking
@@ -480,8 +492,10 @@ class HexagonClawTUI:
         self.last_gen_time = seconds
         self.total_tokens_session += tokens or 0
         answer = "".join(answer_parts)
-        if answer:
+        if answer.strip():
             self.messages.extend([user_message, {"role": "assistant", "content": answer}])
+        elif reasoning_seen:
+            self.console.print("\n[yellow]Ricevuto solo ragionamento; nessuna risposta finale. Turno non salvato.[/yellow]")
         else:
             self.console.print("\n[yellow]Nessuna risposta finale ricevuta; turno non salvato.[/yellow]")
         if finish_reason == "length":
@@ -541,8 +555,32 @@ class HexagonClawTUI:
             else:
                 self.console.print(f"Temperatura attuale: [cyan]{self.temperature:.2f}[/cyan]")
 
+        elif cmd in ("/maxtokens", "/max_tokens", "/max-tokens"):
+            if args:
+                try:
+                    val = int(args)
+                    if val > 0:
+                        self.max_tokens = val
+                        self.console.print(f"[green]✓ Limite di generazione impostato a {self.max_tokens} token[/green]")
+                    else:
+                        self.console.print("[red]Errore: max_tokens deve essere positivo (> 0)[/red]")
+                except ValueError:
+                    self.console.print("[red]Valore numerico non valido per max_tokens (es. /maxtokens 4096)[/red]")
+            else:
+                self.console.print(f"Limite di generazione attuale: [cyan]{self.max_tokens}[/cyan] token")
+
         elif cmd == "/tokens":
             self.show_tokens_info()
+
+        elif cmd == "/reasoning":
+            setting = args.lower()
+            if setting and setting not in ("off", "auto"):
+                self.console.print("[red]Uso: /reasoning off|auto[/red]")
+            else:
+                if setting:
+                    self.reasoning = setting
+                detail = "disattivato nella richiesta" if self.reasoning == "off" else "scelta del server"
+                self.console.print(Text(f"Ragionamento: {self.reasoning} ({detail})."))
 
         elif cmd == "/bench":
             self.run_benchmark(args)
@@ -573,6 +611,8 @@ class HexagonClawTUI:
         t.add_row("/clear, /new", "", "Azzera la cronologia messaggi e riparte da zero")
         t.add_row("/system", "[nuovo prompt]", "Visualizza o ridefinisce il system prompt dell'assistente")
         t.add_row("/temp", "<0.0 - 2.0>", "Modifica la temperatura di campionamento (default: 0.7)")
+        t.add_row("/maxtokens", "<numero>", "Modifica il limite di generazione per risposta (default: 2048)")
+        t.add_row("/reasoning", "off|auto", "Disattiva il ragionamento o usa la scelta del server (default: off)")
         t.add_row("/tokens", "", "Stima il consumo di token corrente e l'impegno della KV cache")
         t.add_row("/server", "status|start|stop|restart", "Controlla il router; stop arresta tutti i llama-server locali")
         t.add_row("/exit, /quit", "", "Termina la TUI ed esce al terminale")
@@ -831,10 +871,12 @@ def main():
     parser.add_argument("--system", default=None, help="System prompt personalizzato")
     parser.add_argument("--workspace", type=Path, default=DEFAULT_WORKSPACE, help="Directory launcher e preset INI")
     parser.add_argument("--max-tokens", type=int, default=2048, help="Limite di generazione per risposta (default: 2048)")
+    parser.add_argument("--reasoning", choices=("off", "auto"), default="off",
+                        help="Ragionamento: off nella richiesta, auto usa la scelta del server (default: off)")
     args = parser.parse_args()
     try:
         tui = HexagonClawTUI(base_url=args.url, model=args.model, system_prompt=args.system,
-                             workspace_dir=args.workspace, max_tokens=args.max_tokens)
+                             workspace_dir=args.workspace, max_tokens=args.max_tokens, reasoning=args.reasoning)
     except ValueError as exc:
         parser.error(str(exc))
     try:

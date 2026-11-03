@@ -54,6 +54,7 @@ class TUITests(unittest.TestCase):
         self.assertIsNone(self.app.last_gen_speed)
         body = json.loads(self.requests[0].content)
         self.assertEqual(body['max_tokens'], 2048)
+        self.assertEqual(body['reasoning_effort'], 'none')
         self.assertEqual(body['stream_options'], {'include_usage': True})
         self.assertEqual(len(self.requests), 1)  # Nessun GET prima del POST.
 
@@ -103,6 +104,35 @@ class TUITests(unittest.TestCase):
         self.app.stream_chat('ciao')
         self.assertEqual(self.app.messages, [])
         self.assertIn('limite', self.output.getvalue())
+        self.assertIn('Ricevuto solo ragionamento', self.output.getvalue())
+
+    def test_auto_reasoning_leaves_server_choice(self):
+        self.app.handle_slash_command('/reasoning auto')
+        self.serve(sse(delta(content='risposta'), delta(finish='stop')))
+        self.app.stream_chat('ciao')
+        self.assertNotIn('reasoning_effort', json.loads(self.requests[0].content))
+        self.app.handle_slash_command('/reasoning off')
+        self.app.stream_chat('ciao')
+        self.assertEqual(json.loads(self.requests[1].content)['reasoning_effort'], 'none')
+
+    def test_invalid_reasoning_command_keeps_current_setting(self):
+        self.app.handle_slash_command('/reasoning auto')
+        self.app.handle_slash_command('/reasoning invalid')
+        self.assertEqual(self.app.reasoning, 'auto')
+        self.assertIn('Uso: /reasoning off|auto', self.output.getvalue())
+
+    def test_unclosed_think_block_and_whitespace_are_not_saved_as_final_answer(self):
+        self.serve(sse(delta(content=' \n<think>solo pensiero'), delta(finish='length')))
+        self.app.stream_chat('ciao')
+        self.assertEqual(self.app.messages, [])
+        self.assertIn('Ricevuto solo ragionamento', self.output.getvalue())
+
+    def test_empty_final_answer_is_not_misdiagnosed_as_reasoning(self):
+        self.serve(sse(delta(content=' \n'), delta(finish='length')))
+        self.app.stream_chat('ciao')
+        self.assertEqual(self.app.messages, [])
+        self.assertIn('Nessuna risposta finale ricevuta', self.output.getvalue())
+        self.assertNotIn('Ricevuto solo ragionamento', self.output.getvalue())
 
     def test_server_timings_are_used_without_counting_chunks(self):
         self.serve(sse(delta(content='più token in un solo frammento'),
@@ -195,6 +225,23 @@ class TUITests(unittest.TestCase):
              patch.object(self.app, 'handle_server_command') as control:
             self.app.run()
         control.assert_not_called()
+
+    def test_maxtokens_slash_command(self):
+        self.assertEqual(self.app.max_tokens, 2048)
+        self.app.handle_slash_command("/maxtokens 4096")
+        self.assertEqual(self.app.max_tokens, 4096)
+        self.assertIn("4096", self.output.getvalue())
+
+        self.app.handle_slash_command("/maxtokens")
+        self.assertIn("attuale: 4096", self.output.getvalue())
+
+        self.app.handle_slash_command("/maxtokens 0")
+        self.assertEqual(self.app.max_tokens, 4096)
+        self.assertIn("positivo", self.output.getvalue())
+
+        self.app.handle_slash_command("/maxtokens invalido")
+        self.assertEqual(self.app.max_tokens, 4096)
+        self.assertIn("non valido", self.output.getvalue())
 
     def test_prompt_escapes_model_html(self):
         self.app.prompt_session = unittest.mock.Mock()

@@ -7,5 +7,6 @@ hexagon-models.ini
 __pycache__/
 *.pyc
 
-# Corpus, risposte e telemetria del test hardware di contesto lungo
-long-context-results/
+# Modelli locali e pesi
+models/
+*.gguf

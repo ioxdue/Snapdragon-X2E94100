@@ -59,7 +59,6 @@ Il vecchio aggiornamento automatico del commit `dbbb499` non deve essere usato s
 
 - [Precondizioni di compatibilità e procedura di verifica](docs/COMPATIBILITA.md)
 - [Benchmark storici, con limitazioni metodologiche](BENCHMARK.md)
-- [Test hardware oltre 64k: input effettivo, recupero e attivita' NPU](docs/LONG_CONTEXT_NPU.md)
 - [Launcher](launch-hexagon.ps1) · [Benchmark](benchmark-hexagon.ps1) · [Sincronizzatore sperimentale](sync-geniex.ps1)
 
 ## Architettura: due percorsi distinti
@@ -180,6 +179,11 @@ python tui.py --workspace "C:\percorso\Snapdragon-X2E94100" --url http://127.0.0
 - `/bench [n_tokens]`: benchmark HTTP con TTFT osservato dal client e tempi prefill/decode
   separati quando il server li fornisce. I contatori provengono da `usage`/`timings`;
   senza questi dati token e velocità restano `N/D`. I frammenti SSE non sono token.
+- `/reasoning off|auto`: per default la TUI invia `reasoning_effort: none` per
+  disattivare il ragionamento nei modelli che lo consentono. `auto` usa la scelta
+  del server; disponibile anche con `--reasoning auto` all'avvio. La scelta vale
+  per chat e `/bench`. Se arriva solo ragionamento senza risposta finale, il turno
+  non viene salvato. Il limite di generazione comprende anche il ragionamento.
 - `/stack status`: versioni, commit e confronto dei file tramite identità, dimensione
   e SHA-256. Presenza dei file e commit uguali non verificano firma, ABI o inferenza.
 - `/stack check`: consulta le release pubblicate di llama.cpp e GenieX, senza eseguire
