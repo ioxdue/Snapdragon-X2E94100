@@ -135,6 +135,32 @@ class StackTests(unittest.TestCase):
         self.assertFalse(ok)
         run.assert_not_called()
 
+    def test_stop_server_scopes_stop_to_managed_directory(self):
+        managed = str(self.manager.llama_server).replace("'", "''")
+        outputs = iter([
+            subprocess.CompletedProcess([], 0, stdout='1234\n', stderr=''),  # interrogazione PID
+            subprocess.CompletedProcess([], 0, stdout='', stderr=''),         # Stop-Process
+            subprocess.CompletedProcess([], 0, stdout='\n', stderr=''),      # verifica post-arresto
+        ])
+        calls = []
+        def run(argv, **kwargs):
+            command = argv[argv.index('-Command') + 1]
+            calls.append(command)
+            return next(outputs)
+        with patch.object(stack.sys, 'platform', 'win32'), \
+             patch('stack_manager.subprocess.run', side_effect=run):
+            self.assertTrue(self.manager.stop_server())
+        self.assertTrue(any('Get-CimInstance' in c and f"-eq '{managed}'" in c for c in calls))
+        self.assertIn('Stop-Process -Force -ErrorAction Stop -Id 1234', calls)
+
+    def test_stop_server_without_managed_processes_never_stops_anything(self):
+        with patch.object(stack.sys, 'platform', 'win32'), \
+             patch('stack_manager.subprocess.run',
+                   return_value=subprocess.CompletedProcess([], 0, stdout='', stderr='')) as run:
+            self.assertTrue(self.manager.stop_server())
+        run.assert_called_once()
+        self.assertIn('Get-CimInstance', run.call_args.args[0][-1])
+
     def test_commit_prefixes_require_valid_hashes(self):
         for left, right in (('a', 'abcdef123'), ('N/A', 'N/A'), ('', ''), ('123456z', '123456z')):
             self.assertFalse(stack.same_commit(left, right))

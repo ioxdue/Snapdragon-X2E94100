@@ -202,6 +202,15 @@ class TUITests(unittest.TestCase):
         self.app.show_tokens_info()
         self.assertNotIn('Rispettato', self.output.getvalue())
 
+    def test_presets_fall_back_to_checkout_ini(self):
+        checkout = self.root / 'checkout'
+        checkout.mkdir()
+        (checkout / 'hexagon-models.ini').write_text('[m]\ndevice = HTP0\n', encoding='utf-8')
+        self.serve(json.dumps({'data': []}).encode())
+        with patch('tui.DEFAULT_WORKSPACE', checkout):
+            self.app.refresh_models()
+        self.assertEqual(self.app.get_model_info('m')['device'], 'HTP0')
+
     def test_exact_model_match_is_case_insensitive(self):
         self.serve(json.dumps({'data': [{'id': 'MODEL'}, {'id': 'MODEL-extra'}]}).encode())
         self.app.switch_model('model')
@@ -225,6 +234,108 @@ class TUITests(unittest.TestCase):
              patch.object(self.app, 'handle_server_command') as control:
             self.app.run()
         control.assert_not_called()
+
+    def test_clear_and_new_reset_context_and_screen(self):
+        for command in ('/clear', '/new'):
+            with self.subTest(command=command):
+                self.app.messages = [{'role': 'user', 'content': 'vecchio'}]
+                with patch.object(self.app.console, 'clear', wraps=self.app.console.clear) as clear:
+                    self.app.handle_slash_command(command)
+                self.assertEqual(self.app.messages, [])
+                clear.assert_called_once_with()
+                self.assertIn('schermata e contesto azzerati', self.output.getvalue())
+
+    def test_plain_clear_is_a_command_not_a_chat_message(self):
+        self.app.prompt_session = unittest.mock.Mock()
+        self.app.prompt_session.prompt.side_effect = ['clear', '/exit']
+        self.app.messages = [{'role': 'user', 'content': 'vecchio'}]
+        with patch.object(self.app, 'refresh_models', return_value=(True, 0, [])), \
+             patch.object(self.app, 'stream_chat') as chat:
+            self.app.run()
+        chat.assert_not_called()
+        self.assertEqual(self.app.messages, [])
+
+    def test_status_bar_shows_model_context_reasoning_and_speed(self):
+        self.app.active_model = 'model<&>'
+        self.app.presets = {'model<&>': {'ctx-size': '1000'}}
+        self.app.system_prompt = '1234567890'
+        self.app.last_gen_speed = 12.0
+        rendered = self.app.status_bar()
+        text = ''.join(text for style, text in rendered.__pt_formatted_text__())
+        self.assertIn('model<&>', text)
+        self.assertIn('~2/1,000 token', text)
+        self.assertIn('reasoning off', text)
+        self.assertIn('12.0 t/s', text)
+        self.assertIn('↑↓ history', text)
+
+    def test_waiting_indicator_stops_when_response_starts(self):
+        self.serve(sse(delta(content='risposta'), delta(finish='stop')))
+        status = unittest.mock.Mock()
+        with patch.object(self.app.console, 'status', return_value=status) as make_status:
+            self.app.stream_chat('ciao')
+        status.start.assert_called_once_with()
+        status.stop.assert_called_once_with()
+        self.assertIn('Ctrl+C interrompe', str(make_status.call_args.args[0]))
+
+    def test_waiting_indicator_stops_after_stream_error(self):
+        status = unittest.mock.Mock()
+        with patch.object(self.app, '_chat_events', side_effect=ValueError('errore')), \
+             patch.object(self.app.console, 'status', return_value=status):
+            self.app.stream_chat('ciao')
+        status.start.assert_called_once_with()
+        status.stop.assert_called_once_with()
+
+    def test_unknown_command_suggests_close_matches(self):
+        self.app.handle_slash_command('/cler')
+        self.assertIn('Comando sconosciuto: /cler', self.output.getvalue())
+        self.assertIn('Forse intendi: /clear', self.output.getvalue())
+
+    def test_help_preserves_literal_argument_placeholders(self):
+        self.app.show_help()
+        self.assertIn('[n_tokens]', self.output.getvalue())
+        self.assertIn('[nuovo prompt]', self.output.getvalue())
+        self.assertIn('/history', self.output.getvalue())
+        self.assertIn('/quit, /q', self.output.getvalue())
+
+    def test_aliases_are_normalized_to_canonical_commands(self):
+        self.serve(json.dumps({'data': [{'id': 'model'}]}).encode())
+        for alias in ('/q', '/quit'):
+            with self.subTest(alias=alias):
+                self.app.prompt_session = unittest.mock.Mock()
+                self.app.prompt_session.prompt.return_value = alias
+                with patch.object(self.app, 'refresh_models', return_value=(True, 0, [])), \
+                     patch.object(self.app, 'stream_chat') as chat:
+                    self.app.run()
+                chat.assert_not_called()
+
+    def test_models_with_arguments_always_lists_never_switches(self):
+        self.serve(json.dumps({'data': [{'id': 'model'}, {'id': 'model-extra'}]}).encode())
+        with patch.object(self.app, 'list_models') as listing, \
+             patch.object(self.app, 'switch_model') as switch:
+            self.app.handle_slash_command('/models model')
+        listing.assert_called_once_with()
+        switch.assert_not_called()
+
+    def test_history_clear_deletes_file_and_preserves_conversation(self):
+        self.app.history_file = self.root / 'command-history'
+        self.app.prompt_session = unittest.mock.Mock()
+        self.app.messages = [{'role': 'user', 'content': 'mantienimi'}]
+        for command in ('/history clear', '/clear-history'):
+            with self.subTest(command=command):
+                self.app.history_file.write_text('history', encoding='utf-8')
+                with patch('tui.FileHistory', wraps=tui.FileHistory) as history:
+                    self.app.handle_slash_command(command)
+                self.assertFalse(self.app.history_file.exists())
+                history.assert_called_once_with(str(self.app.history_file))
+                self.assertEqual(self.app.prompt_session.history.filename, str(self.app.history_file))
+                self.assertEqual(self.app.messages, [{'role': 'user', 'content': 'mantienimi'}])
+
+    def test_history_without_arguments_does_not_delete_file(self):
+        self.app.history_file = self.root / 'command-history'
+        self.app.history_file.write_text('history', encoding='utf-8')
+        self.app.handle_slash_command('/history')
+        self.assertTrue(self.app.history_file.exists())
+        self.assertIn('/history clear', self.output.getvalue())
 
     def test_maxtokens_slash_command(self):
         self.assertEqual(self.app.max_tokens, 2048)
@@ -274,3 +385,5 @@ class ProtocolTests(unittest.TestCase):
         completer = tui.OpenClawCompleter(lambda: ['model'])
         completions = list(completer.get_completions(Document('/stack '), None))
         self.assertEqual([entry.text for entry in completions], ['status', 'check', 'sync', 'update-geniex', 'update-llama'])
+        completions = list(completer.get_completions(Document('/history '), None))
+        self.assertEqual([entry.text for entry in completions], ['clear'])

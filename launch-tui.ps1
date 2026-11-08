@@ -23,12 +23,33 @@ try {
     if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace = $launcherRoot }
     $scriptPath = Join-Path $launcherRoot 'tui.py'
     if (-not (Test-Path -LiteralPath $scriptPath)) { throw "tui.py non trovato in $PSScriptRoot" }
-    # La CLI batch conserva la sintassi Python --url/--model/--workspace.
+    # La CLI batch conserva la sintassi Python. I flag riconosciuti vengono consumati
+    # una sola volta (precedenza alla riga di comando, come l'ultimo-vince di argparse);
+    # gli argomenti rimasti vengono inoltrati intatti a Python.
     if ($FromBatch) {
-        for ($i = 0; $i -lt $TuiArguments.Count - 1; $i++) {
-            if ($TuiArguments[$i] -eq '--url') { $Url = $TuiArguments[$i + 1] }
-            if ($TuiArguments[$i] -eq '--workspace') { $Workspace = $TuiArguments[$i + 1] }
+        $known = @{ '--url' = 'Url'; '--workspace' = 'Workspace'; '--model' = 'Model'; '--system' = 'SystemPrompt' }
+        $cliFlags = [ordered]@{}
+        $remaining = New-Object System.Collections.Generic.List[string]
+        for ($i = 0; $i -lt $TuiArguments.Count; $i++) {
+            $token = [string]$TuiArguments[$i]
+            if ($known.ContainsKey($token) -and $i + 1 -lt $TuiArguments.Count) {
+                $cliFlags[$token] = [string]$TuiArguments[$i + 1]; $i++
+            } elseif ($token -eq '--max-tokens' -and $i + 1 -lt $TuiArguments.Count) {
+                $cliFlags[$token] = [string]$TuiArguments[$i + 1]; $i++
+            } else {
+                $remaining.Add($token)
+            }
         }
+        if ($cliFlags.Contains('--url')) { $Url = $cliFlags['--url'] }
+        if ($cliFlags.Contains('--workspace')) { $Workspace = $cliFlags['--workspace'] }
+        if ($cliFlags.Contains('--model')) { $Model = $cliFlags['--model'] }
+        if ($cliFlags.Contains('--system')) { $SystemPrompt = $cliFlags['--system'] }
+        if ($cliFlags.Contains('--max-tokens')) {
+            $parsed = 0
+            if ([int]::TryParse($cliFlags['--max-tokens'], [ref]$parsed)) { $MaxTokens = $parsed }
+            else { $remaining.Add('--max-tokens'); $remaining.Add($cliFlags['--max-tokens']) }
+        }
+        $TuiArguments = $remaining.ToArray()
     }
     $uri = [uri]$Url
     if (-not $uri.IsAbsoluteUri -or $uri.Scheme -notin @('http', 'https')) { throw 'URL HTTP(S) non valido.' }
@@ -38,11 +59,19 @@ try {
     }
     Import-Module (Join-Path $launcherRoot 'tui-bootstrap.psm1') -Force
     $python = Resolve-HexagonTuiPython -Requirements (Join-Path $launcherRoot 'requirements.txt')
-    $arguments = @($scriptPath, '--url', $Url, '--workspace', $Workspace, '--max-tokens', $MaxTokens)
-    if ($Model) { $arguments += @('--model', $Model) }
-    if ($SystemPrompt) { $arguments += @('--system', $SystemPrompt) }
-    # PowerShell puo' gia' aver associato --url/--model ai parametri omonimi.
-    # Gli altri flag Python restano nell'array e mantengono la precedenza.
+    # Ogni flag riconosciuto compare una sola volta, in ordine canonico.
+    # Nota: PowerShell puo' gia' aver legato --url/--model ai parametri omonimi;
+    # i valori qui sono quelli finali (riga di comando inclusa).
+    $flagValues = [ordered]@{
+        '--url' = $Url; '--workspace' = $Workspace; '--model' = $Model
+        '--system' = $SystemPrompt; '--max-tokens' = [string]$MaxTokens
+    }
+    $arguments = @($scriptPath)
+    foreach ($f in $flagValues.Keys) {
+        $value = [string]$flagValues[$f]
+        if ($f -in @('--model', '--system') -and [string]::IsNullOrWhiteSpace($value)) { continue }
+        $arguments += @($f, $value)
+    }
     $arguments += @($TuiArguments)
     & $python @arguments
     exit $LASTEXITCODE

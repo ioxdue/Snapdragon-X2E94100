@@ -50,6 +50,8 @@ def same_commit(left: str, right: str) -> bool:
 class StackManager:
     def __init__(self, geniex_dir: Optional[Path] = None,
                  llama_bin_dir: Optional[Path] = None, workspace_dir: Optional[Path] = None):
+        # La ricerca di geniex.exe nel PATH vale solo per il percorso predefinito:
+        # una directory esplicita mancante segnala un errore di configurazione, non un fallback.
         self.geniex_dir = Path(geniex_dir or DEFAULT_GENIEX_DIR)
         if geniex_dir is None and not (self.geniex_dir / "geniex.exe").is_file():
             executable = shutil.which("geniex.exe")
@@ -74,21 +76,44 @@ class StackManager:
                 pass
         return None
 
+    def managed_server_pids(self) -> List[int]:
+        """PID dei llama-server.exe avviati dalla directory gestita; [] se non disponibile."""
+        if sys.platform != "win32":
+            return []
+        path = str(self.llama_server).replace("'", "''")
+        script = (
+            "Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" -ErrorAction Stop | "
+            f"Where-Object {{ $_.ExecutablePath -eq '{path}' }} | ForEach-Object {{ $_.ProcessId }}"
+        )
+        try:
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", script],
+                capture_output=True, text=True, errors="replace", timeout=10, check=True,
+            )
+            return [int(line) for line in proc.stdout.splitlines() if line.strip().isdigit()]
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return []
+
     def stop_server(self) -> bool:
-        """Arresto esplicito di tutti i processi llama-server.exe locali."""
+        """Arresto esplicito dei soli llama-server.exe della directory gestita.
+
+        Gli altri llama-server.exe locali, non installati da questo stack, restano attivi.
+        """
+        pids = self.managed_server_pids()
         if sys.platform != "win32":
             return False
+        if not pids:
+            return True
         try:
             subprocess.run(
                 ["powershell", "-NoProfile", "-Command",
-                 "$ErrorActionPreference='Stop'; "
-                 "Get-Process -Name llama-server -ErrorAction SilentlyContinue | Stop-Process -Force"],
+                 f"Stop-Process -Force -ErrorAction Stop -Id {','.join(map(str, pids))}"],
                 capture_output=True, timeout=10, check=True,
             )
             for _ in range(10):
-                if self.is_server_running() is False:
+                if not self.managed_server_pids():
                     return True
-                time.sleep(0.2)
+                time.sleep(0.3)
         except (OSError, subprocess.SubprocessError):
             pass
         return False
@@ -108,6 +133,32 @@ class StackManager:
             return True
         except OSError:
             return False
+
+    def _catalog_signature_status(self) -> str:
+        """Stato della firma Authenticode di libggml-htp.cat; 'N/D' se non verificabile.
+
+        Lo stato della firma non dimostra l'attendibilita' del certificato ne' la
+        compatibilita' degli artefatti; serve solo a rendere esplicito cio' che il
+        file system locale dichiara.
+        """
+        if sys.platform != "win32":
+            return "N/D"
+        path = self.llama_bin_dir / "libggml-htp.cat"
+        if not path.is_file():
+            return "N/D"
+        script = f"(Get-AuthenticodeSignature -LiteralPath '{str(path).replace(chr(39), chr(39) * 2)}').Status"
+        try:
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", script],
+                capture_output=True, text=True, errors="replace", timeout=15, check=True,
+            )
+            lines = proc.stdout.strip().splitlines()
+            if not lines:
+                return "N/D"
+            status = lines[-1].strip()
+            return {"Valid": "Valida", "NotSigned": "Non firmata"}.get(status, status or "N/D")
+        except (OSError, subprocess.SubprocessError):
+            return "N/D"
 
     def get_stack_status(self, include_runtime: bool = True) -> Dict[str, Any]:
         status = {
@@ -197,7 +248,9 @@ class StackManager:
 
         for name in ("libggml-htp-v81.so", "libggml-htp.cat", "ggml-hexagon.dll", "ggml-opencl.dll"):
             path = self.llama_bin_dir / name
-            artifact = {"present": path.is_file(), "size": 0, "sha256": "N/A"}
+            artifact = {"present": path.is_file(), "size": 0, "sha256": "N/A", "signature": "N/D"}
+            if name == "libggml-htp.cat" and artifact["present"]:
+                artifact["signature"] = self._catalog_signature_status()
             if artifact["present"]:
                 try:
                     artifact.update(size=path.stat().st_size, sha256=digest(path)[:12] + "...")
@@ -307,7 +360,10 @@ class StackManager:
                       f"{sum(f['is_hardlink'] for f in files)} hard-link",
                       "Identità verificata" if st["all_files_aligned"] else "Differenze o inventario incompleto")
         for name, artifact in st["npu_artifacts"].items():
-            table.add_row(name, artifact["sha256"], "Presente" if artifact["present"] else "Mancante")
+            detail = artifact["sha256"]
+            if artifact.get("signature") and artifact["signature"] != "N/D":
+                detail = f"{detail}; firma: {artifact['signature']}"
+            table.add_row(name, detail, "Presente" if artifact["present"] else "Mancante")
         running = st["server_running"]
         table.add_row("Processi llama-server", "Controllo locale per nome",
                       "N/D" if running is None else "In esecuzione" if running else "Fermi")

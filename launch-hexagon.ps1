@@ -178,7 +178,15 @@ public class GgufModelMeta {
 }
 '@
 
-Add-Type -TypeDefinition $csharpCode -ErrorAction SilentlyContinue
+# In una sessione riusata il tipo puo' gia' essere caricato: si riusa senza mascherare
+# errori di compilazione della prima definizione.
+try {
+    Add-Type -TypeDefinition $csharpCode -ErrorAction Stop
+} catch {
+    if (-not ('GgufModelMeta' -as [type])) { throw }
+    Write-Verbose "GgufModelMeta gia' caricato in questa sessione PowerShell; si riusa la versione esistente."
+}
+if (-not ('GgufModelMeta' -as [type])) { throw "Parser GGUF non disponibile." }
 
 # -------------------------------------------------------------
 # Motore Decisionale Euristico basato sulla Telemetria Hardware
@@ -292,6 +300,9 @@ Get-ChildItem -Path $ModelsDir -Filter "*.gguf" -Recurse -File | ForEach-Object 
         if (-not (Test-Path $linkTarget)) {
             Write-Host "Creazione hard-link per modello in sotto-cartella: $($_.Name)" -ForegroundColor DarkGray
             cmd /c "mklink /H `"$linkTarget`" `"$($_.FullName)`"" 2>$null | Out-Null
+            if (-not (Test-Path -LiteralPath $linkTarget -PathType Leaf)) {
+                Write-Warning "Hard-link non creato per $($_.Name): il modello non sara' visibile al router (volume diverso?)."
+            }
         }
     }
 }

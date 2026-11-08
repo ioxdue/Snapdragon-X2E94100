@@ -7,6 +7,10 @@ hexagon-models.ini
 __pycache__/
 *.pyc
 
+# Output di benchmark e analisi locali
+benchmark-logs/
+long-context-results/
+
 # Modelli locali e pesi
 models/
 *.gguf

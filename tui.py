@@ -7,10 +7,12 @@ per llama.cpp su Snapdragon X2 Elite Extreme (Qualcomm Hexagon NPU / Adreno GPU 
 
 import sys
 import os
+import platform
 import time
 import json
 import ctypes
 import argparse
+import difflib
 import math
 from html import escape as escape_html
 from urllib.parse import urlsplit
@@ -194,6 +196,18 @@ def ram_label():
 # ---------------------------------------------------------------------------
 # Autocompletamento OpenClaw con prompt_toolkit
 # ---------------------------------------------------------------------------
+# Sinonimi accettati ma non mostrati nei completamenti: la superficie visibile
+# resta il comando canonico di SLASH_COMMANDS.
+COMMAND_ALIASES = {
+    "/q": "/exit",
+    "/quit": "/exit",
+    "/h": "/help",
+    "/?": "/help",
+    "/m": "/model",
+    "/max_tokens": "/maxtokens",
+    "/max-tokens": "/maxtokens",
+}
+
 SLASH_COMMANDS = {
     "/help": "Mostra tutti i comandi disponibili e i tasti di scelta rapida",
     "/model": "Cambia modello attivo o elenca i modelli disponibili sul router",
@@ -201,16 +215,17 @@ SLASH_COMMANDS = {
     "/status": "Visualizza stato server, RAM e configurazione dichiarata",
     "/stack": "Verifica, installa e aggiorna lo stack tramite GenieX",
     "/bench": "Esegue un benchmark prestazionale in tempo reale (t/s e latenza)",
-    "/clear": "Cancella la cronologia messaggi e azzera il contesto",
+    "/clear": "Pulisce la schermata e avvia una nuova conversazione (anche: clear)",
     "/new": "Sinonimo di /clear (avvia una nuova sessione)",
+    "/history": "Mostra o cancella la history dei comandi (/history clear)",
+    "/clear-history": "Cancella la history dei comandi senza toccare la conversazione",
     "/system": "Visualizza o imposta il system prompt attivo",
     "/temp": "Imposta la temperatura di campionamento (es. /temp 0.2)",
     "/maxtokens": "Imposta il limite massimo di token generati (es. /maxtokens 4096)",
     "/reasoning": "Imposta ragionamento off oppure auto (scelta del server)",
     "/tokens": "Analisi utilizzo token e percentuale finestra di contesto",
-    "/server": "Stato e controllo del server locale (status, start, stop)",
+    "/server": "Stato e controllo del server locale; stop arresta solo la directory gestita",
     "/exit": "Esci da Hexagon Claw TUI",
-    "/quit": "Esci da Hexagon Claw TUI",
 }
 
 
@@ -246,6 +261,10 @@ class OpenClawCompleter(Completer):
                             start_position=-len(arg),
                             display=m,
                         )
+            elif cmd.lower() == "/history":
+                arg = parts[1] if len(parts) > 1 else ""
+                if "clear".startswith(arg.lower()):
+                    yield Completion("clear", start_position=-len(arg), display="clear")
             elif cmd.lower() == "/server":
                 arg = parts[1] if len(parts) > 1 else ""
                 for sub in ("status", "start", "stop", "restart"):
@@ -316,17 +335,19 @@ class HexagonClawTUI:
                                  trust_env=url.hostname not in ("127.0.0.1", "localhost", "::1"))
 
         # Inizializza sessione prompt_toolkit con fallback per ambienti non-interattivi
-        history_file = Path.home() / ".hexagon_claw_history"
+        self.history_file = Path.home() / ".hexagon_claw_history"
         pt_style = PtStyle.from_dict({
             "prompt": "ansicyan bold",
             "model": "ansigreen",
             "arrow": "ansiyellow bold",
+            "bottom-toolbar": "bg:#222222 #dddddd",
         })
         try:
             self.prompt_session = PromptSession(
-                history=FileHistory(str(history_file)),
+                history=FileHistory(str(self.history_file)),
                 auto_suggest=AutoSuggestFromHistory(),
                 completer=OpenClawCompleter(self.get_available_model_ids),
+                bottom_toolbar=self.status_bar,
                 style=pt_style,
             )
         except Exception:
@@ -334,6 +355,16 @@ class HexagonClawTUI:
 
     def close(self):
         self.http.close()
+
+    def status_bar(self):
+        used = self.estimate_context_tokens()
+        limit = int(self.get_model_info(self.active_model)["ctx"])
+        context = f"~{used:,}/{limit:,} token" if limit else f"~{used:,} token"
+        return HTML(
+            f'<ansigreen><b>{escape_html(self.active_model)}</b></ansigreen> '
+            f'<ansibrightblack>│ contesto {context} │ reasoning {self.reasoning} '
+            f'│ {speed_label(self.last_gen_speed)} │ ↑↓ history │ /help</ansibrightblack>'
+        )
 
     def get_available_model_ids(self) -> List[str]:
         if self.available_models:
@@ -357,11 +388,20 @@ class HexagonClawTUI:
             return False, 0.0, []
 
     def refresh_models(self):
-        try:
-            self.presets = load_ini_presets(self.ini_path)
-        except (OSError, UnicodeError) as exc:
-            self.console.print(Text(f"Preset non leggibili: {exc}", style="yellow"))
-            self.presets = {}
+        # Il launcher Router genera hexagon-models.ini nel checkout; con --workspace diverso
+        # si ricade su quel file per non perdere i preset generati.
+        candidates = list(dict.fromkeys(
+            (self.ini_path, Path(DEFAULT_WORKSPACE) / "hexagon-models.ini")))
+        self.presets = {}
+        for candidate in candidates:
+            try:
+                presets = load_ini_presets(candidate)
+            except (OSError, UnicodeError) as exc:
+                self.console.print(Text(f"Preset non leggibili ({candidate}): {exc}", style="yellow"))
+                continue
+            if presets:
+                self.presets = presets
+                break
         health = self.check_server_health()
         online, _, models = health
         self.available_models = models if online else []
@@ -450,9 +490,18 @@ class HexagonClawTUI:
         display_thinking = False
         reasoning_seen = False
         t0 = time.perf_counter()
+        status = self.console.status(
+            Text(f"{self.active_model} sta elaborando… │ Ctrl+C interrompe", style="cyan"),
+            spinner="dots",
+        )
+        status.start()
+        waiting = True
 
         def display(thinking, piece):
-            nonlocal display_thinking, reasoning_seen
+            nonlocal display_thinking, reasoning_seen, waiting
+            if waiting:
+                status.stop()
+                waiting = False
             if thinking and piece.strip():
                 reasoning_seen = True
             if thinking != display_thinking:
@@ -484,6 +533,9 @@ class HexagonClawTUI:
         except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError) as exc:
             self.console.print(Text(f"\nErrore durante lo streaming: {exc}", style="red"))
             return
+        finally:
+            if waiting:
+                status.stop()
 
         elapsed = time.perf_counter() - t0
         tokens, speed, seconds = generation_metrics(timings, usage)
@@ -510,17 +562,20 @@ class HexagonClawTUI:
     def handle_slash_command(self, cmd_line: str) -> bool:
         """Restituisce False se il comando richiede l'uscita dalla TUI, True altrimenti"""
         parts = cmd_line.strip().split(" ", 1)
-        cmd = parts[0].lower()
+        cmd = COMMAND_ALIASES.get(parts[0].lower(), parts[0].lower())
         args = parts[1].strip() if len(parts) > 1 else ""
 
-        if cmd in ("/exit", "/quit", "/q"):
+        if cmd == "/exit":
             self.console.print("[yellow]Chiusura Hexagon Claw TUI. Arrivederci! 🐉[/yellow]")
             return False
 
-        elif cmd in ("/help", "/h", "/?"):
+        elif cmd == "/help":
             self.show_help()
 
-        elif cmd in ("/model", "/m", "/models"):
+        elif cmd == "/models":
+            self.list_models()
+
+        elif cmd == "/model":
             if args:
                 self.switch_model(args)
             else:
@@ -529,9 +584,14 @@ class HexagonClawTUI:
         elif cmd == "/status":
             self.show_status_dashboard()
 
-        elif cmd == "/clear" or cmd == "/new":
+        elif cmd in ("/clear", "/new"):
             self.messages.clear()
-            self.console.print("[green]✓ Cronologia conversazione azzerata. Nuovo contesto avviato.[/green]")
+            self.console.clear()
+            self.console.print(Text("✓ Nuova conversazione: schermata e contesto azzerati.", style="green"))
+            self.console.print(Text(f"Modello attivo: {self.active_model} │ /help per i comandi", style="dim"))
+
+        elif cmd in ("/history", "/clear-history"):
+            self.handle_history_command("clear" if cmd == "/clear-history" else args)
 
         elif cmd == "/system":
             if args:
@@ -555,7 +615,7 @@ class HexagonClawTUI:
             else:
                 self.console.print(f"Temperatura attuale: [cyan]{self.temperature:.2f}[/cyan]")
 
-        elif cmd in ("/maxtokens", "/max_tokens", "/max-tokens"):
+        elif cmd == "/maxtokens":
             if args:
                 try:
                     val = int(args)
@@ -593,8 +653,29 @@ class HexagonClawTUI:
 
         else:
             self.console.print(Text(f"Comando sconosciuto: {cmd}. Digita /help per la lista comandi.", style="red"))
+            suggestions = difflib.get_close_matches(cmd, SLASH_COMMANDS, n=3, cutoff=0.55)
+            if suggestions:
+                self.console.print(Text(f"Forse intendi: {', '.join(suggestions)}", style="cyan"))
 
         return True
+
+    def handle_history_command(self, action: str):
+        action = action.strip().lower()
+        if not action:
+            self.console.print(Text(f"History dei comandi: {self.history_file}"))
+            self.console.print("[dim]Usa ↑↓ per navigarla; /history clear per cancellarla.[/dim]")
+            return
+        if action != "clear":
+            self.console.print("Uso: /history [clear]")
+            return
+        try:
+            self.history_file.unlink(missing_ok=True)
+        except OSError as exc:
+            self.console.print(Text(f"Impossibile cancellare la history dei comandi: {exc}", style="red"))
+            return
+        if self.prompt_session is not None:
+            self.prompt_session.history = FileHistory(str(self.history_file))
+        self.console.print("[green]✓ History dei comandi cancellata; conversazione invariata.[/green]")
 
     def show_help(self):
         t = Table(title="🐉 Comandi Slash - Hexagon Claw TUI", border_style="cyan", header_style="bold magenta")
@@ -602,22 +683,24 @@ class HexagonClawTUI:
         t.add_column("Argomenti", style="yellow", width=18)
         t.add_column("Descrizione", style="white")
 
-        t.add_row("/help", "", "Mostra questa guida ai comandi")
+        t.add_row("/help", "", "Mostra questa guida ai comandi (alias: /h, /?)")
         t.add_row("/models", "", "Elenca tutti i modelli GGUF disponibili sul router con dettagli hardware")
-        t.add_row("/model", "<nome>", "Seleziona e cambia istantaneamente il modello attivo")
+        t.add_row("/model", "<nome>", "Seleziona e cambia istantaneamente il modello attivo (alias: /m)")
         t.add_row("/status", "", "Stato server, RAM misurata e preset dichiarato")
         t.add_row("/stack", "status|check|sync|update-*", "Verifica, installa e aggiorna lo stack da GenieX")
-        t.add_row("/bench", "[n_tokens]", "Esegue un benchmark sintetico e misura prefill/generation t/s")
-        t.add_row("/clear, /new", "", "Azzera la cronologia messaggi e riparte da zero")
-        t.add_row("/system", "[nuovo prompt]", "Visualizza o ridefinisce il system prompt dell'assistente")
+        t.add_row("/bench", Text("[n_tokens]"), "Esegue un benchmark sintetico e misura prefill/generation t/s")
+        t.add_row("/clear, /new", "", "Pulisce la schermata e avvia una nuova conversazione; vale anche clear")
+        t.add_row("/history", "clear", "Mostra o cancella la history comandi; alias: /clear-history")
+        t.add_row("/system", Text("[nuovo prompt]"), "Visualizza o ridefinisce il system prompt dell'assistente")
         t.add_row("/temp", "<0.0 - 2.0>", "Modifica la temperatura di campionamento (default: 0.7)")
-        t.add_row("/maxtokens", "<numero>", "Modifica il limite di generazione per risposta (default: 2048)")
+        t.add_row("/maxtokens", "<numero>", "Modifica il limite di generazione per risposta (default: 2048; alias: /max_tokens, /max-tokens)")
         t.add_row("/reasoning", "off|auto", "Disattiva il ragionamento o usa la scelta del server (default: off)")
         t.add_row("/tokens", "", "Stima il consumo di token corrente e l'impegno della KV cache")
-        t.add_row("/server", "status|start|stop|restart", "Controlla il router; stop arresta tutti i llama-server locali")
-        t.add_row("/exit, /quit", "", "Termina la TUI ed esce al terminale")
+        t.add_row("/server", "status|start|stop|restart", "Controlla il router; stop arresta solo i llama-server della directory gestita")
+        t.add_row("/exit, /quit, /q", "", "Termina la TUI ed esce al terminale")
 
         self.console.print(t)
+        self.console.print("[dim]/ apre i completamenti │ ↑↓ history │ Ctrl+C interrompe │ Ctrl+D esce[/dim]")
 
     def list_models(self):
         self.refresh_models()
@@ -670,6 +753,8 @@ class HexagonClawTUI:
         table = Table(title="🐉 Stato TUI / server", border_style="cyan")
         table.add_column("Parametro", style="bold cyan")
         table.add_column("Valore")
+        host = f"{platform.system()} {platform.machine()}".strip() or "N/D"
+        table.add_row("Piattaforma host", host)
         table.add_row("Piattaforma target", "Snapdragon X2 Elite Extreme (X2E94100)")
         table.add_row("CPU logiche rilevate", str(os.cpu_count() or "N/D"))
         table.add_row("RAM misurata", ram_label())
@@ -715,6 +800,9 @@ class HexagonClawTUI:
         t0 = time.perf_counter()
         first_piece = None
         timings, usage = {}, {}
+        status = self.console.status(Text("Benchmark in corso… │ Ctrl+C interrompe", style="cyan"), spinner="dots")
+        status.start()
+        waiting = True
         try:
             for event in self._chat_events(body):
                 timings.update(event.get("timings") or {})
@@ -725,6 +813,8 @@ class HexagonClawTUI:
                     if delta.get("content") or delta.get("reasoning_content"):
                         if first_piece is None:
                             first_piece = time.perf_counter()
+                            status.stop()
+                            waiting = False
             elapsed = time.perf_counter() - t0
         except KeyboardInterrupt:
             self.console.print("[yellow]Benchmark interrotto.[/yellow]")
@@ -732,6 +822,9 @@ class HexagonClawTUI:
         except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError) as exc:
             self.console.print(Text(f"Benchmark fallito: {exc}", style="red"))
             return
+        finally:
+            if waiting:
+                status.stop()
         tokens, speed, seconds = generation_metrics(timings, usage)
         ttft = (first_piece - t0) * 1000 if first_piece is not None else None
         table = Table(title=Text(f"🐉 Benchmark: {self.active_model}"), border_style="green")
@@ -770,7 +863,8 @@ class HexagonClawTUI:
             if not self.stack_mgr.stop_server():
                 self.console.print("[red]Arresto dei processi llama-server non confermato.[/red]")
                 return
-            self.console.print("[green]Processi llama-server locali arrestati.[/green]")
+            self.console.print("[green]Processi llama-server della directory gestita arrestati; "
+                               "altri llama-server locali non sono stati toccati.[/green]")
             if action == "stop":
                 return
         if self.check_server_health()[0]:
@@ -842,12 +936,13 @@ class HexagonClawTUI:
                 if not user_input:
                     continue
 
-                if user_input.startswith("/"):
-                    should_continue = self.handle_slash_command(user_input)
+                command = "/clear" if user_input.casefold() == "clear" else user_input
+                if command.startswith("/"):
+                    should_continue = self.handle_slash_command(command)
                     if not should_continue:
                         break
                 else:
-                    self.stream_chat(user_input)
+                    self.stream_chat(command)
 
             except KeyboardInterrupt:
                 # Ctrl+C nel prompt cancella la riga corrente

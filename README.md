@@ -140,6 +140,8 @@ non sono piu' il criterio di verifica dell'updater.
 
 `-ListOnly` e `-DryRun` possono ancora creare hard-link dei modelli durante la scansione;
 la loro esclusione dal bootstrap riguarda il runtime, non tutti gli effetti del launcher.
+Un hard-link non creato (per esempio tra volumi diversi) viene segnalato con un warning:
+il modello resta nella sotto-cartella ma non è visibile al router.
 
 Il server espone un endpoint compatibile OpenAI sulla porta `18803`. Il binding predefinito è `127.0.0.1`. L'accesso LAN richiede `-BindHost` esplicito; **non esporre l'endpoint senza autenticazione su una rete non attendibile**.
 
@@ -163,7 +165,9 @@ Se l'endpoint HTTP locale e' offline, la TUI avvia il router, il cui launcher co
 il bootstrap. Un URL remoto non avvia o aggiorna processi locali.
 
 Il workspace predefinito è la directory del checkout, dove il launcher genera
-`hexagon-models.ini`. Per usare un'altra directory:
+`hexagon-models.ini`. Se il file non è presente nel workspace indicato con
+`--workspace`, la TUI ricade su quello generato nel checkout. Per usare un'altra
+directory:
 
 ```powershell
 python tui.py --workspace "C:\percorso\Snapdragon-X2E94100" --url http://127.0.0.1:18803/v1
@@ -174,8 +178,12 @@ python tui.py --workspace "C:\percorso\Snapdragon-X2E94100" --url http://127.0.0
   Device e tensor-split non sono misure di offload; i dati non disponibili sono `N/D`.
 - Chat: streaming con `reasoning_content` o tag `<think>` anche frammentati. La cronologia
   inviata al turno successivo conserva la risposta finale; un turno interrotto o fallito
-  non viene salvato. Il limite predefinito è **2048 token di generazione**, configurabile
-  con `--max-tokens` (o `-MaxTokens` nel launcher PowerShell).
+  non viene salvato. Un indicatore mostra l'attesa prima del primo contenuto; `Ctrl+C`
+  interrompe la generazione senza chiudere la TUI. Il limite predefinito è **2048 token di
+  generazione**, configurabile con `--max-tokens` (o `-MaxTokens` nel launcher PowerShell).
+- La barra inferiore mostra modello, contesto stimato, modalità di ragionamento e ultima
+  velocità. Digitando `/` si aprono i completamenti; con `↑` e `↓` si naviga la history di
+  input. I comandi sconosciuti vicini a un comando valido producono un suggerimento.
 - `/bench [n_tokens]`: benchmark HTTP con TTFT osservato dal client e tempi prefill/decode
   separati quando il server li fornisce. I contatori provengono da `usage`/`timings`;
   senza questi dati token e velocità restano `N/D`. I frammenti SSE non sono token.
@@ -186,6 +194,8 @@ python tui.py --workspace "C:\percorso\Snapdragon-X2E94100" --url http://127.0.0
   non viene salvato. Il limite di generazione comprende anche il ragionamento.
 - `/stack status`: versioni, commit e confronto dei file tramite identità, dimensione
   e SHA-256. Presenza dei file e commit uguali non verificano firma, ABI o inferenza.
+  La ricerca di `geniex.exe` nel PATH vale solo per il percorso predefinito: una
+  directory GenieX esplicita e priva di eseguibile segnala un errore di configurazione.
 - `/stack check`: consulta le release pubblicate di llama.cpp e GenieX, senza eseguire
   updater. Il confronto fra build llama.cpp è possibile solo quando entrambe sono note.
 - `/stack sync`, `/stack update-llama`: installazione/allineamento automatico alla
@@ -193,9 +203,13 @@ python tui.py --workspace "C:\percorso\Snapdragon-X2E94100" --url http://127.0.0
 - `/stack update-geniex`: aggiorna GenieX con il comando ufficiale, poi riallinea il
   runtime. Prima separa eventuali hard-link legacy per preservare la copia installata.
 - `/server status|start|stop|restart`: controllo HTTP e gestione del router Windows locale.
-  `stop` e `restart` arrestano tutti i processi locali chiamati `llama-server`.
+  `stop` e `restart` arrestano solo i `llama-server.exe` della directory gestita;
+  altre installazioni locali non vengono toccate.
   Gli endpoint remoti supportano il solo controllo di stato.
-- `/clear`, `/new`, `/system`, `/temp`, `/tokens`, `/help`, `/exit`: gestione della sessione.
+- `/clear` (o `clear`), `/new`: pulisce la schermata e azzera il contesto, conservando la
+  history dei comandi. `/history` mostra il file di history; `/history clear` o
+  `/clear-history` cancella solo la history di input, senza modificare la conversazione.
+  `/system`, `/temp`, `/tokens`, `/help`, `/exit` gestiscono le altre azioni della sessione.
 
 La stima di contesto basata sui caratteri non misura la KV cache né verifica i limiti FastRPC.
 Il client HTTP riusa le connessioni e raggiunge direttamente gli endpoint loopback,
