@@ -431,8 +431,13 @@ class HexagonClawTUI:
         limit = int(info["ctx"])
         used = self.estimate_context_tokens()
         context = f"~{used:,} / {limit:,} token" if limit else f"~{used:,} token / limite N/D"
+        st = self.stack_mgr.get_stack_status(include_runtime=False)
+        tag_str = f" ({st['llama_release_tag']})" if st.get("llama_release_tag") else ""
+        commit_str = f"{st['llama_server_commit'][:7]}{tag_str}" if st.get("llama_server_commit") else "N/D"
+        genie_ver = st.get("geniex_version", "N/D")
         header = Text("🐉 HEXAGON CLAW TUI", style="bold cyan")
         header.append(" │ Target: Snapdragon X2 Elite Extreme\n")
+        header.append(f"Runtime: GenieX {genie_ver} │ llama.cpp commit {commit_str}\n", style="dim")
         header.append(f"Server: {'ONLINE' if online else 'OFFLINE'}", style="green" if online else "red")
         if online:
             header.append(f" ({latency:.1f} ms)")

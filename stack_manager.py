@@ -197,7 +197,7 @@ class StackManager:
                     if match:
                         version = match.group(1).strip()
                         status["llama_server_version"] = version
-                        build = re.match(r"b?(\d+)\b", version)
+                        build = re.search(r"\bbuild\s+(\d+)\b", version, re.I) or re.search(r"\bb?(\d{2,})\b", version, re.I) or re.search(r"\bb?(\d+)\b", version, re.I)
                         if build:
                             status["llama_server_build"] = int(build.group(1))
                         commit = re.search(r"\bcommit\s+([0-9a-fA-F]{7,40})\b|\(([0-9a-fA-F]{7,40})\)", version)
@@ -206,6 +206,20 @@ class StackManager:
             except (OSError, subprocess.SubprocessError) as exc:
                 status[prefix + "_version"] = "Errore lettura"
                 status["errors"].append(f"{exe.name}: {exc}")
+
+        manifest_path = self.llama_bin_dir / "hexagon-runtime.json"
+        if manifest_path.is_file():
+            try:
+                manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                rel = manifest_data.get("Release") or {}
+                tag = rel.get("Tag") or ""
+                if tag:
+                    status["llama_release_tag"] = tag
+                    tag_build = re.search(r"(\d+)", tag)
+                    if tag_build:
+                        status["llama_server_build"] = int(tag_build.group(1))
+            except Exception:
+                pass
 
         status["commit_aligned"] = same_commit(status["geniex_llama_hash"], status["llama_server_commit"])
         if not include_runtime:
@@ -350,7 +364,10 @@ class StackManager:
         table.add_column("Esito osservato")
         table.add_row("GenieX CLI", Text(f"{st['geniex_version']} (QAIRT {st['qairt_version']})"),
                       "Presente" if st["geniex_installed"] else "Mancante")
-        table.add_row("llama.cpp Server", Text(st["llama_server_version"]),
+        llama_ver = st["llama_server_version"]
+        if st.get("llama_release_tag"):
+            llama_ver = f"{llama_ver} [{st['llama_release_tag']}]"
+        table.add_row("llama.cpp Server", Text(llama_ver),
                       "Presente" if st["llama_server_installed"] else "Mancante")
         table.add_row("Commit", Text(f"GenieX: {st['geniex_llama_hash'] or 'N/D'}; "
                                      f"llama.cpp: {st['llama_server_commit'] or 'N/D'}"),
