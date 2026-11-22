@@ -82,6 +82,16 @@ function Get-RuntimeProcesses($Directory) { return @() }
             Write-String $writer $entry[0]; $writer.Write([uint32]4); $writer.Write([uint32]$entry[1])
         }
     } finally { $writer.Dispose() }
+    $result = Run-Entry ('-NoProfile -File "' + (Join-Path $checkout 'launch-hexagon.ps1') + '" -ListOnly -Json')
+    $inventory = $result.Output | ConvertFrom-Json
+    if ($result.Code -ne 0 -or @($inventory.models).Count -ne 1) { throw "JSON inventory failed: $($result.Output) $($result.Error)" }
+    $result = Run-Entry ('-NoProfile -File "' + (Join-Path $checkout 'launch-hexagon.ps1') + '" -Mode Router -DryRun -Json')
+    $plan = $result.Output | ConvertFrom-Json
+    if ($result.Code -ne 0 -or $plan.models[0].alias -ne 'fixture') { throw "JSON preview failed: $($result.Output) $($result.Error)" }
+    if (Test-Path (Join-Path $checkout 'hexagon-models.ini')) { throw 'JSON preview wrote the INI' }
+    if (Test-Path $env:HEXAGON_TEST_MARKER) { throw 'JSON preview started the server' }
+    Write-Host 'PASS JSON inventory and router preview have no filesystem or process side effects'
+
     $result = Run-Entry ('-NoProfile -File "' + (Join-Path $checkout 'launch-hexagon.ps1') + '" -Mode Router')
     if ($result.Code -ne 0 -or -not (Test-Path $env:HEXAGON_TEST_MARKER)) { throw "First launch failed: $($result.Output) $($result.Error)" }
     if (-not (Test-Path (Join-Path $bin 'hexagon-runtime.json'))) { throw 'First launch skipped installation' }
@@ -104,7 +114,23 @@ function Get-RuntimeProcesses($Directory) { return @() }
     $arguments = $lastLine | ConvertFrom-Json
     if ($arguments[$arguments.IndexOf('--model')+1] -ne 'Case With Spaces' -or $arguments[-1] -ne '32') { throw "CLI arguments lost: $lastLine" }
     Write-Host 'PASS TUI launcher reuses bootstrap, preserves CLI arguments and exit code'
-    Write-Host 'ENTRYPOINT_TESTS=PASS (3 Windows process scenarios)'
+
+    [IO.File]::WriteAllText((Join-Path $checkout 'hexagon_app.py'), 'import sys,json; print(json.dumps(sys.argv)); sys.exit(9)')
+    Remove-Item -LiteralPath $bin -Recurse -Force
+    $result = Run-Entry ('-NoProfile -File "' + (Join-Path $checkout 'launch-tui.ps1') + '" -ControlCenter')
+    if ($result.Code -ne 9) { throw "Control center exit code lost: $($result.Code) $($result.Output) $($result.Error)" }
+    if (Test-Path (Join-Path $bin 'hexagon-runtime.json')) { throw 'Control center bootstrap changed the runtime' }
+    $lastLine = ($result.Output.Trim() -split '\r?\n')[-1]
+    $arguments = $lastLine | ConvertFrom-Json
+    if ($arguments[0] -notlike '*hexagon_app.py' -or $arguments -contains '--model') { throw "Control center arguments invalid: $lastLine" }
+    Write-Host 'PASS control center bootstrap skips runtime sync and preserves Python exit code'
+
+    Copy-Item -LiteralPath (Join-Path $repo 'hexagon.bat') -Destination $checkout
+    $batch = Join-Path $checkout 'hexagon.bat'
+    $result = Run-Entry ('-NoProfile -Command "& ''' + $batch + '''"; exit $LASTEXITCODE')
+    if ($result.Code -ne 9 -or $result.Output -notmatch 'hexagon_app.py') { throw "hexagon.bat failed: $($result.Code) $($result.Output) $($result.Error)" }
+    Write-Host 'PASS hexagon.bat is parameterless and preserves the control center exit code'
+    Write-Host 'ENTRYPOINT_TESTS=PASS (6 Windows process scenarios)'
 } finally {
     $env:USERPROFILE=$savedProfile; $env:LOCALAPPDATA=$savedAppData
     $env:HEXAGON_TEST_MARKER=$savedMarker; $env:HEXAGON_TEST_PYTHON=$savedPython

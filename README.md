@@ -17,10 +17,30 @@ llama.cpp. I modelli GGUF sono contenuti di input: il launcher usa quelli presen
 nella cache di GenieX (`geniex pull`), oppure la directory specificata con `-ModelsDir`.
 
 ```powershell
+.\hexagon.bat            # centro di controllo unificato, senza parametri
+```
+
+Il centro di controllo prepara soltanto Python e le dipendenze TUI, poi apre il dashboard:
+non avvia server, non aggiorna il runtime e non modifica l'INI all'apertura. I launcher
+specializzati restano disponibili per l'automazione e l'uso headless:
+
+```powershell
 .\llama-server-all.bat   # prepara il runtime e avvia il router
 .\llama-server.bat       # prepara il runtime e avvia un singolo modello
-.\tui.bat                # prepara anche Python/dipendenze TUI, poi il router locale
+.\tui.bat                # prepara Python/dipendenze TUI, poi il router e la chat
 ```
+
+### Hexagon Local Coding Agent (Kilo Code)
+
+Il progetto include l'integrazione con **Kilo Code CLI** (`@kilocode/cli`) per eseguire flussi agentici di programmazione completi (lettura codice, multi-file edit, esecuzione test, diagnosi errori, code review) interamente in locale e offline su Snapdragon X2 Elite Extreme:
+
+```powershell
+.\setup-kilo.ps1              # Verifica 11 prerequisiti, integrità runtime e sicurezza offline
+.\launch-kilo.ps1             # Avvia il router Hexagon su loopback e apre Kilo Code
+.\launch-kilo.ps1 -CheckOnly  # Controllo diagnostico non intrusivo dello stato
+```
+
+Per l'architettura dettagliata, la matrice dei modelli (Ornith 1.5 9B, MiniCPM5, Qwen Coder 14B), i ruoli personalizzati (`.kilo/agents`) e i benchmark, consultare [docs/HEXAGON_LOCAL_CODING_AGENT.md](docs/HEXAGON_LOCAL_CODING_AGENT.md).
 
 La stessa procedura e' usata al primo avvio e quando cambia il runtime GenieX:
 
@@ -58,6 +78,7 @@ Il vecchio aggiornamento automatico del commit `dbbb499` non deve essere usato s
 **Stato:** le scelte di dispositivo, gli split e le dimensioni di contesto del launcher sono *euristiche sperimentali*, non configurazioni ottimali dimostrate. L'enumerazione dei device non equivale a una prova di inferenza sulla NPU. Nessun limite universale di modello a 14-15 GB o di contesto a 4096/65536 token è stabilito da questo progetto.
 
 - [Precondizioni di compatibilità e procedura di verifica](docs/COMPATIBILITA.md)
+- [Guida Hexagon Local Coding Agent (Kilo Code)](docs/HEXAGON_LOCAL_CODING_AGENT.md)
 - [Benchmark storici, con limitazioni metodologiche](BENCHMARK.md)
 - [Launcher](launch-hexagon.ps1) · [Benchmark](benchmark-hexagon.ps1) · [Sincronizzatore sperimentale](sync-geniex.ps1)
 
@@ -143,7 +164,44 @@ la loro esclusione dal bootstrap riguarda il runtime, non tutti gli effetti del 
 Un hard-link non creato (per esempio tra volumi diversi) viene segnalato con un warning:
 il modello resta nella sotto-cartella ma non è visibile al router.
 
+Per integrazioni read-only usare `-ListOnly -Json`, `-Mode Direct -DryRun -Json` oppure
+`-Mode Router -DryRun -Json`: questi contratti non creano link, non scrivono l'INI e non
+avviano processi. L'output contiene metadati, euristiche, argomenti CLI e, per Router,
+il contenuto INI proposto.
+
 Il server espone un endpoint compatibile OpenAI sulla porta `18803`. Il binding predefinito è `127.0.0.1`. L'accesso LAN richiede `-BindHost` esplicito; **non esporre l'endpoint senza autenticazione su una rete non attendibile**.
+
+## Hexagon Control Center
+
+`hexagon.bat` è l'entry point principale per doppio clic o terminale e non richiede
+argomenti. Riutilizza il bootstrap Python/venv esistente con `-ExecutionPolicy Bypass`.
+Il dashboard usa `rich` e `prompt_toolkit`; i controller risiedono in `hexagon_control/`,
+separati dalle schermate, mentre `launch-hexagon.ps1` resta l'unica fonte delle euristiche.
+
+I tasti `1`–`9` aprono rispettivamente: Router, singolo modello, prerequisiti/sicurezza,
+Kilo Code, diagnostica, inventario GGUF, editor INI, percorsi/link e aggiornamenti.
+`C` apre la chat, `L` la dashboard con refresh ogni due secondi, `B` torna indietro nei
+sottomenu e `Q` esce. Le azioni di scrittura, rimozione link e aggiornamento richiedono
+conferma. Il check delle release online è separato dai controlli locali.
+
+- Gli avvii dal centro di controllo usano `-CheckRuntime`: eventuali installazioni o
+  aggiornamenti si effettuano soltanto nell'area Aggiornamenti o tramite i launcher legacy.
+- PID, memoria e log sono rilevati dai processi locali. L'elenco `/v1/models` indica i
+  modelli registrati; gli slot caricati restano `N/D` se il server non li espone.
+- Il tool calling è marcato verificato solo dopo una richiesta funzionale esplicita;
+  quantizzazione e nome file non costituiscono una prova.
+- L'editor INI valida sintassi e parametri, mostra il diff e salva in modo atomico con
+  backup UTF-8 senza BOM. Le preview JSON non modificano il file.
+- Hard-link e symlink non sovrascrivono destinazioni esistenti. La rimozione è limitata
+  ai link nelle directory configurate e non elimina gli altri riferimenti al contenuto.
+- Configurazione e log sono in `%LOCALAPPDATA%\HexagonClaw`; i log di sessione sono nella
+  sottodirectory `logs`. Il rilevamento automatico dei modelli include le sottodirectory.
+- All'uscita è possibile lasciare attivi oppure arrestare soltanto i server avviati dalla
+  sessione. Il controllo esplicito `X` nel menu Router gestisce invece l'intera directory
+  runtime, come la CLI esistente.
+
+Per un Python già predisposto è disponibile anche `python hexagon_app.py`; la modalità
+interattiva legacy `python tui.py` e tutti i relativi flag restano supportati.
 
 ## Hexagon Claw TUI (Interfaccia Terminale in Stile OpenClaw)
 

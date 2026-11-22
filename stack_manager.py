@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -319,23 +320,39 @@ class StackManager:
         script = self.workspace_dir / "sync-geniex.ps1"
         if not script.is_file():
             return False, {"Error": f"Script non trovato: {script}"}
+        # Output su file temporaneo invece che su pipe: un processo nipote
+        # staccato che eredita la handle della pipe farebbe attendere
+        # subprocess.run all'infinito, anche dopo l'uscita di PowerShell.
+        out = tempfile.NamedTemporaryFile(mode="w+", suffix=".json", prefix="hexagon-sync-",
+                                          delete=False, encoding="utf-8", errors="replace")
+        err = tempfile.NamedTemporaryFile(mode="w+", suffix=".log", prefix="hexagon-sync-",
+                                          delete=False, encoding="utf-8", errors="replace")
         try:
             proc = subprocess.run(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
                  "-BinPath", str(self.llama_bin_dir), "-GenieXDir", str(self.geniex_dir),
                  "-Apply", "-Json", *options],
-                cwd=self.workspace_dir, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=900,
+                cwd=self.workspace_dir, stdin=subprocess.DEVNULL,
+                stdout=out, stderr=err, timeout=900,
             )
+            out.seek(0)
+            stdout_text = out.read()
+            err.seek(0)
+            stderr_text = err.read()
             # Una diagnostica PowerShell puo' precedere l'ultima riga JSON.
-            result = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.stdout.strip() else {}
+            result = json.loads(stdout_text.strip().splitlines()[-1]) if stdout_text.strip() else {}
             if proc.returncode != 0:
-                return False, {"Error": result.get("Error") or proc.stderr.strip() or "Aggiornamento fallito"}
+                return False, {"Error": result.get("Error") or stderr_text.strip() or "Aggiornamento fallito"}
             if not isinstance(result.get("Message"), str):
                 return False, {"Error": "Risposta del sincronizzatore non valida."}
             return True, result
         except (OSError, subprocess.SubprocessError, ValueError, AttributeError) as exc:
             return False, {"Error": str(exc)}
+        finally:
+            out.close()
+            err.close()
+            Path(out.name).unlink(missing_ok=True)
+            Path(err.name).unlink(missing_ok=True)
 
     def sync_runtime_from_geniex(self, auto_stop_server: bool = True) -> Tuple[bool, str, List[str]]:
         options = [] if auto_stop_server else ["-NoStopServer"]

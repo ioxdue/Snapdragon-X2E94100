@@ -25,7 +25,7 @@ try {
         # Prima separa le copie installate da eventuali hard-link legacy a GenieX.
         [void](Sync-HexagonRuntime -BinPath $BinPath -GenieXDir $GenieXDir -Apply -Force -NoStopServer:$NoStopServer)
         $genie = Get-GenieRuntime $GenieXDir
-        [void](Invoke-RuntimeNative $genie.Exe 'update' $genie.Directory 600000)
+        [void](Invoke-RuntimeNative $genie.Exe 'update --silent' $genie.Directory 600000)
     }
     $result = Sync-HexagonRuntime -BinPath $BinPath -GenieXDir $GenieXDir -Apply:($Apply -or $AutoConfirm -or $UpdateGenieX) `
         -Force:$Force -NoStopServer:$NoStopServer -UseHardLinks:$UseHardLinks

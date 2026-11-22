@@ -1,0 +1,148 @@
+version = 1
+
+# ============================================
+# Generato automaticamente da launch-hexagon.ps1
+# Data: 2026-11-22 17:27:58
+# Piattaforma: Snapdragon X2 Elite Extreme
+# ============================================
+
+# Default globali applicati a tutti i modelli
+[*]
+flash-attn = on
+n-gpu-layers = 999
+parallel = 1
+load-mode = mlock
+fit = off
+threads = 12
+threads-batch = 12
+batch-size = 4096
+ubatch-size = 512
+context-shift = true
+
+# --- Checkpoint (0.8 GB, olmoe, K-Quants) ---
+# Strategia: MoE Leggero (LFM/A2B): Ibrido HTP0 (80%) + GPU (20%) per doppio canale di banda RAM (~46 t/s)
+[agent-model-Q4_K_M]
+model = C:\Users\ioxdu\.cache\geniex\models\agent-model-Q4_K_M.gguf
+device = HTP0,GPUOpenCL
+tensor-split = 80,20
+ctx-size = 4096
+
+# --- Flint Preview (23.33 GB, flint, K-Quants) ---
+# Strategia: MoE Gigante K-Quants (Flint): Ibrido HTP0 (85%) + GPU (15%) per preservare SIMD NPU
+[flint-UD-Q4_K_XL]
+model = C:\Users\ioxdu\.cache\geniex\models\flint-UD-Q4_K_XL.gguf
+device = HTP0,GPUOpenCL
+tensor-split = 85,15
+ctx-size = 131072
+
+# --- Hf (3.12 GB, gemma4, Q4_0) ---
+# Strategia: Dense Compatto (<=6GB): 100% NPU HTP0 (prefill 750-3800 t/s, consumo 14-18W)
+[gemma-4-E2B_q4_0-it]
+model = C:\Users\ioxdu\.cache\geniex\models\gemma-4-E2B_q4_0-it.gguf
+device = HTP0
+ctx-size = 131072
+
+# --- Gpt-Oss-20B (10.71 GB, gpt-oss, Q4_0) ---
+# Strategia: MoE Leggero (LFM/A2B): Ibrido HTP0 (80%) + GPU (20%) per doppio canale di banda RAM (~46 t/s)
+[gpt-oss-20b-Q4_0]
+model = C:\Users\ioxdu\.cache\geniex\models\gpt-oss-20b-Q4_0.gguf
+device = HTP0,GPUOpenCL
+tensor-split = 80,20
+ctx-size = 131072
+
+# --- Granite 4.2 8b (4.71 GB, granite, Q4_0) ---
+# Strategia: Dense Compatto (<=6GB): 100% NPU HTP0 (prefill 750-3800 t/s, consumo 14-18W)
+[granite-4.2-8b-Q4_0]
+model = C:\Users\ioxdu\.cache\geniex\models\granite-4.2-8b-Q4_0.gguf
+device = HTP0
+ctx-size = 65536
+
+# --- LFM2.5-24B-A2B-QAD-Q4_0 (12.65 GB, lfm2moe, Q4_0) ---
+# Strategia: MoE Leggero (LFM/A2B): Ibrido HTP0 (80%) + GPU (20%) per doppio canale di banda RAM (~46 t/s)
+[LFM2.5-24B-A2B-QAD-Q4_0]
+model = C:\Users\ioxdu\.cache\geniex\models\LFM2.5-24B-A2B-QAD-Q4_0.gguf
+device = HTP0,GPUOpenCL
+tensor-split = 80,20
+ctx-size = 65536
+
+# --- MiniCPM5 2.6B (1.45 GB, llama, K-Quants) ---
+# Strategia: Dense Compatto (<=6GB): 100% NPU HTP0 (prefill 750-3800 t/s, consumo 14-18W)
+[MiniCPM5-2B-Q4_K_M]
+model = C:\Users\ioxdu\.cache\geniex\models\MiniCPM5-2B-Q4_K_M.gguf
+device = HTP0
+ctx-size = 65536
+
+# --- Checkpoint (3.81 GB, olmoe, K-Quants) ---
+# Strategia: MoE Leggero (LFM/A2B): Ibrido HTP0 (80%) + GPU (20%) per doppio canale di banda RAM (~46 t/s)
+[model-Q4_K_M]
+model = C:\Users\ioxdu\.cache\geniex\models\model-Q4_K_M.gguf
+device = HTP0,GPUOpenCL
+tensor-split = 80,20
+ctx-size = 4096
+
+# --- Ornith 1.5 9B (5.11 GB, qwen35, Q4_0) ---
+# Strategia: Dense Compatto (<=6GB): 100% NPU HTP0 (prefill 750-3800 t/s, consumo 14-18W)
+[Ornith-1.5-9B-Q4_0]
+model = C:\Users\ioxdu\.cache\geniex\models\Ornith-1.5-9B-Q4_0.gguf
+device = HTP0
+ctx-size = 65536
+
+# --- Qwen2.5 Coder 14B Instruct AWQ (7.93 GB, qwen2, Q4_0) ---
+# Strategia: Dense Medio (Qwen 14B): Ibrido HTP0 (75%) + GPU (25%) per sbloccare la saturazione DMA a contesti lunghi
+[qwen2.5-coder-14b-instruct-q4_0]
+model = C:\Users\ioxdu\.cache\geniex\models\qwen2.5-coder-14b-instruct-q4_0.gguf
+device = HTP0,GPUOpenCL
+tensor-split = 75,25
+ctx-size = 65536
+
+# --- Qwen3.5-0.8B (0.47 GB, qwen35, Q4_0) ---
+# Strategia: Dense Compatto (<=6GB): 100% NPU HTP0 (prefill 750-3800 t/s, consumo 14-18W)
+[Qwen3.5-0.8B-Q4_0]
+model = C:\Users\ioxdu\.cache\geniex\models\Qwen3.5-0.8B-Q4_0.gguf
+device = HTP0
+ctx-size = 65536
+
+# --- Qwen3.5 0.8B Weight Space Programming (1.45 GB, qwen35, BF16) ---
+# Strategia: Dense Compatto (<=6GB): 100% NPU HTP0 (prefill 750-3800 t/s, consumo 14-18W)
+[Qwen3.5-0.8B-WSP-BF16]
+model = C:\Users\ioxdu\.cache\geniex\models\Qwen3.5-0.8B-WSP-BF16.gguf
+device = HTP0
+ctx-size = 65536
+
+# --- Qwen3.5 0.8B Weight Space Programming (0.48 GB, qwen35, Q4_0) ---
+# Strategia: Dense Compatto (<=6GB): 100% NPU HTP0 (prefill 750-3800 t/s, consumo 14-18W)
+[Qwen3.5-0.8B-WSP-Q4_0]
+model = C:\Users\ioxdu\.cache\geniex\models\Qwen3.5-0.8B-WSP-Q4_0.gguf
+device = HTP0
+ctx-size = 65536
+
+# --- Qwen3.8 27B (15.23 GB, qwen35, Q4_0) ---
+# Strategia: Dense Enorme (>15GB): Ibrido 50/50 per prevenire overflow FastRPC e throttling termico
+[Qwen3.8-27B-Q4_0]
+model = C:\Users\ioxdu\.cache\geniex\models\Qwen3.8-27B-Q4_0.gguf
+device = HTP0,GPUOpenCL
+tensor-split = 50,50
+ctx-size = 65536
+
+# --- Qwen3.8 27B Brainwaves NM HERETIC BR LOA1 (16.81 GB, qwen35, K-Quants) ---
+# Strategia: Dense Enorme K-Quants (>15GB): 100% NPU HTP0 (evita overflow buffer OpenCL 2GB per output.weight BF16)
+[Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-Q4_K_M]
+model = C:\Users\ioxdu\.cache\geniex\models\Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-Q4_K_M.gguf
+device = HTP0
+ctx-size = 65536
+
+# --- Qwen3.6 35B A3B (19.41 GB, qwen35moe, Q4_0) ---
+# Strategia: MoE Gigante Q4_0: Ibrido 50/50 per azzerare il fallback CPU e quintuplicare il prefill (152 t/s)
+[Qwen_Qwen3.6-35B-A3B-Q4_0]
+model = C:\Users\ioxdu\.cache\geniex\models\Qwen_Qwen3.6-35B-A3B-Q4_0.gguf
+device = HTP0,GPUOpenCL
+tensor-split = 50,50
+ctx-size = 65536
+
+# --- Hf_Format (2.42 GB, spark2_5, K-Quants) ---
+# Strategia: Dense Compatto (<=6GB): 100% NPU HTP0 (prefill 750-3800 t/s, consumo 14-18W)
+[Spark-X2.5-4B-Q4_K_M]
+model = C:\Users\ioxdu\.cache\geniex\models\Spark-X2.5-4B-Q4_K_M.gguf
+device = HTP0
+ctx-size = 131072
+

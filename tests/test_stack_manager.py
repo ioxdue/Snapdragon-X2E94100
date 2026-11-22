@@ -106,9 +106,14 @@ class StackTests(unittest.TestCase):
     def test_sync_delegates_to_powershell_and_preserves_arguments(self):
         script = self.root / 'sync-geniex.ps1'
         script.write_text('# fixture')
-        completed = subprocess.CompletedProcess([], 0, stdout='{"Message":"aligned","Files":["ggml.dll"],"Backup":"previous"}', stderr='')
+
+        def fake_run(*args, **kwargs):
+            kwargs['stdout'].write('{"Message":"aligned","Files":["ggml.dll"],"Backup":"previous"}')
+            kwargs['stderr'].write('')
+            return subprocess.CompletedProcess(args, 0)
+
         with patch.object(stack.sys, 'platform', 'win32'), \
-             patch('stack_manager.subprocess.run', return_value=completed) as run:
+             patch('stack_manager.subprocess.run', side_effect=fake_run) as run:
             ok, message, files = self.manager.sync_runtime_from_geniex(auto_stop_server=False)
         self.assertTrue(ok)
         self.assertEqual(files, ['ggml.dll'])
@@ -121,9 +126,13 @@ class StackTests(unittest.TestCase):
 
     def test_vendor_update_failure_is_propagated(self):
         (self.root / 'sync-geniex.ps1').write_text('# fixture')
-        completed = subprocess.CompletedProcess([], 1, stdout='{"Error":"vendor update failed"}', stderr='')
+
+        def fake_run(*args, **kwargs):
+            kwargs['stdout'].write('{"Error":"vendor update failed"}')
+            return subprocess.CompletedProcess(args, 1)
+
         with patch.object(stack.sys, 'platform', 'win32'), \
-             patch('stack_manager.subprocess.run', return_value=completed) as run:
+             patch('stack_manager.subprocess.run', side_effect=fake_run) as run:
             ok, message = self.manager.update_geniex_cli()
         self.assertFalse(ok)
         self.assertEqual(message, 'vendor update failed')

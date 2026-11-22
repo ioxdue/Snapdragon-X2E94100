@@ -1,0 +1,155 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "provider": {
+    "hexagon": {
+      "name": "Hexagon Local Runtime",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:18803/v1",
+        "apiKey": "local"
+      },
+      "models": {
+        "agent-model-Q4_K_M": {
+          "name": "agent-model-Q4_K_M (HTP0,GPUOpenCL)",
+          "limit": {
+            "context": 4096,
+            "output": 2048
+          }
+        },
+        "flint-UD-Q4_K_XL": {
+          "name": "flint-UD-Q4_K_XL (HTP0,GPUOpenCL)",
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        },
+        "gemma-4-E2B_q4_0-it": {
+          "name": "gemma-4-E2B_q4_0-it (HTP0)",
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        },
+        "gpt-oss-20b-Q4_0": {
+          "name": "gpt-oss-20b-Q4_0 (HTP0,GPUOpenCL)",
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        },
+        "granite-4.2-8b-Q4_0": {
+          "name": "granite-4.2-8b-Q4_0 (HTP0)",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "LFM2.5-24B-A2B-QAD-Q4_0": {
+          "name": "LFM2.5-24B-A2B-QAD-Q4_0 (HTP0)",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "MiniCPM5-2B-Q4_K_M": {
+          "name": "MiniCPM5-2B-Q4_K_M (HTP0)",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "model-Q4_K_M": {
+          "name": "model-Q4_K_M (HTP0,GPUOpenCL)",
+          "limit": {
+            "context": 4096,
+            "output": 2048
+          }
+        },
+        "Ornith-1.5-9B-Q4_0": {
+          "name": "Ornith-1.5-9B-Q4_0 (HTP0)",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "qwen2.5-coder-14b-instruct-q4_0": {
+          "name": "qwen2.5-coder-14b-instruct-q4_0 (HTP0,GPUOpenCL)",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "Qwen3.5-0.8B-Q4_0": {
+          "name": "Qwen3.5-0.8B-Q4_0 (HTP0)",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "Qwen3.5-0.8B-WSP-BF16": {
+          "name": "Qwen3.5-0.8B-WSP-BF16 (HTP0)",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "Qwen3.5-0.8B-WSP-Q4_0": {
+          "name": "Qwen3.5-0.8B-WSP-Q4_0 (HTP0)",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "Qwen3.8-27B-Q4_0": {
+          "name": "Qwen3.8-27B-Q4_0 (HTP0,GPUOpenCL)",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-Q4_K_M": {
+          "name": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-Q4_K_M (HTP0)",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "Qwen_Qwen3.6-35B-A3B-Q4_0": {
+          "name": "Qwen_Qwen3.6-35B-A3B-Q4_0 (HTP0,GPUOpenCL)",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "Spark-X2.5-4B-Q4_K_M": {
+          "name": "Spark-X2.5-4B-Q4_K_M (HTP0)",
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        }
+      }
+    }
+  },
+  "model": "hexagon/Ornith-1.5-9B-Q4_0",
+  "small_model": "hexagon/MiniCPM5-2B-Q4_K_M",
+  "permission": {
+    "read": {
+      "*": "allow"
+    },
+    "edit": {
+      "*": "ask"
+    },
+    "write": {
+      "*": "ask"
+    },
+    "bash": {
+      "*": "ask",
+      "git status *": "allow",
+      "git diff *": "allow",
+      "git log *": "allow"
+    },
+    "task": "ask",
+    "external_directory": "ask"
+  }
+}

@@ -24,6 +24,9 @@
 .PARAMETER CheckRuntime
     Verifica soltanto, senza aggiornare. Per default l'avvio installa/allinea il runtime a GenieX.
 
+.PARAMETER Json
+    Con ListOnly o DryRun emette un piano JSON senza creare link, scrivere INI o avviare processi.
+
 .PARAMETER Mode
     "Direct" (default): avvia direttamente llama-server sul modello specificato.
     "Router": avvia llama-server con --models-dir e un file INI generato automaticamente
@@ -44,6 +47,7 @@ param(
     [string]$Mode = "Direct",
     [switch]$ListOnly,
     [switch]$CheckRuntime,
+    [switch]$Json,
     [int]$ModelsMax = 2,
     [string]$BinPath = (Join-Path $env:USERPROFILE "llama-cpp\llama-bin-win-cpu-arm64"),
     [string]$ModelsDir = (Join-Path $env:USERPROFILE ".cache\geniex\models"),
@@ -51,6 +55,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($Json -and -not ($ListOnly -or $DryRun)) {
+    throw "L'output JSON e' disponibile solo con -ListOnly oppure -DryRun."
+}
 
 # Percorsi base
 $ServerExe = Join-Path $BinPath "llama-server.exe"
@@ -208,9 +215,18 @@ function Get-HexagonOptimalConfig([GgufModelMeta]$meta) {
         if ($sizeGB -le 13.5) {
             # es. LFM2.5 24B (12.65 GB, 4 attivi su 64):
             # Pure HTP0 fa 44.5 t/s, Hybrid 80/20 fa 46.0 t/s aprendo il canale crossbar della GPU
-            $dev = "HTP0,GPUOpenCL"
-            $ts = "80,20"
-            $strategy = "MoE Leggero (LFM/A2B): Ibrido HTP0 (80%) + GPU (20%) per doppio canale di banda RAM (~46 t/s)"
+            if ($meta.Architecture -eq "lfm2moe") {
+                # MA: l'ibrido HTP0+GPUOpenCL va in access violation (0xC0000005) all'avvio
+                # del compute su lfm2moe con il runtime attuale (b12323/93cf736):
+                # il modello non carica affatto. Solo HTP0 carica e genera.
+                $dev = "HTP0"
+                $ts = $null
+                $strategy = "MoE Leggero lfm2moe (LFM2.5): 100% HTP0; l'ibrido GPU va in crash (0xC0000005) su questa architettura"
+            } else {
+                $dev = "HTP0,GPUOpenCL"
+                $ts = "80,20"
+                $strategy = "MoE Leggero (LFM/A2B): Ibrido HTP0 (80%) + GPU (20%) per doppio canale di banda RAM (~46 t/s)"
+            }
         } else {
             # es. Flint Preview (23.3 GB) o Qwen 35B MoE (19.4 GB)
             if ($isKQuant) {
@@ -240,9 +256,16 @@ function Get-HexagonOptimalConfig([GgufModelMeta]$meta) {
             $strategy = "Dense Medio (Qwen 14B): Ibrido HTP0 (75%) + GPU (25%) per sbloccare la saturazione DMA a contesti lunghi"
         } else {
             # es. Qwen 27B (15.2 GB): Oltre 15 GB FastRPC NPU collassa in fallback CPU
-            $dev = "HTP0,GPUOpenCL"
-            $ts = "50,50"
-            $strategy = "Dense Enorme (>15GB): Ibrido 50/50 per prevenire overflow FastRPC e throttling termico"
+            if ($isKQuant) {
+                # K-Quants mantengono output.weight in BF16/FP16 (2.4 GB): supererebbe il limite OpenCL Adreno di 2 GiB (CL_INVALID_BUFFER_SIZE)
+                $dev = "HTP0"
+                $ts = $null
+                $strategy = "Dense Enorme K-Quants (>15GB): 100% NPU HTP0 (evita overflow buffer OpenCL 2GB per output.weight BF16)"
+            } else {
+                $dev = "HTP0,GPUOpenCL"
+                $ts = "50,50"
+                $strategy = "Dense Enorme (>15GB): Ibrido 50/50 per prevenire overflow FastRPC e throttling termico"
+            }
         }
     }
 
@@ -290,47 +313,67 @@ function Get-HexagonOptimalConfig([GgufModelMeta]$meta) {
 # -------------------------------------------------------------
 # Scansione Modelli Disponibili e Auto-Linking
 # -------------------------------------------------------------
-# Esponi i .gguf dei sotto-repo (LiquidAI, Qwen, ecc.) nella root con hard-link a 0 byte
+# Esponi i .gguf dei sotto-repo nella root solo nei flussi legacy. L'inventario
+# JSON attraversa le sottodirectory senza creare link o modificare il disco.
 if (-not (Test-Path -LiteralPath $ModelsDir -PathType Container)) {
     throw "Cache modelli assente: $ModelsDir. Scaricare un GGUF con GenieX (geniex pull) oppure indicare -ModelsDir."
 }
-Get-ChildItem -Path $ModelsDir -Filter "*.gguf" -Recurse -File | ForEach-Object {
-    if ($_.DirectoryName -ne $ModelsDir -and $_.Name -notlike "mmproj*") {
-        $linkTarget = Join-Path $ModelsDir $_.Name
-        if (-not (Test-Path $linkTarget)) {
-            Write-Host "Creazione hard-link per modello in sotto-cartella: $($_.Name)" -ForegroundColor DarkGray
-            cmd /c "mklink /H `"$linkTarget`" `"$($_.FullName)`"" 2>$null | Out-Null
-            if (-not (Test-Path -LiteralPath $linkTarget -PathType Leaf)) {
-                Write-Warning "Hard-link non creato per $($_.Name): il modello non sara' visibile al router (volume diverso?)."
+if (-not $Json) {
+    Get-ChildItem -Path $ModelsDir -Filter "*.gguf" -Recurse -File | ForEach-Object {
+        if ($_.DirectoryName -ne $ModelsDir -and $_.Name -notlike "mmproj*") {
+            $linkTarget = Join-Path $ModelsDir $_.Name
+            if (-not (Test-Path $linkTarget)) {
+                Write-Host "Creazione hard-link per modello in sotto-cartella: $($_.Name)" -ForegroundColor DarkGray
+                cmd /c "mklink /H `"$linkTarget`" `"$($_.FullName)`"" 2>$null | Out-Null
+                if (-not (Test-Path -LiteralPath $linkTarget -PathType Leaf)) {
+                    Write-Warning "Hard-link non creato per $($_.Name): il modello non sara' visibile al router (volume diverso?)."
+                }
             }
         }
     }
 }
 
-$allGguf = Get-ChildItem -Path $ModelsDir -Filter "*.gguf" -File | Where-Object { $_.Name -notlike "mmproj*" }
-if ($allGguf.Count -eq 0) {
+$allGguf = if ($Json) {
+    Get-ChildItem -Path $ModelsDir -Filter "*.gguf" -Recurse -File | Where-Object { $_.Name -notlike "mmproj*" }
+} else {
+    Get-ChildItem -Path $ModelsDir -Filter "*.gguf" -File | Where-Object { $_.Name -notlike "mmproj*" }
+}
+if (@($allGguf).Count -eq 0) {
     Write-Error "Nessun file .gguf trovato in $ModelsDir"
     exit 1
 }
 
 if ($ListOnly) {
-    Write-Host "`n=== MODELLI DISPONIBILI IN $ModelsDir ===" -ForegroundColor Cyan
+    if (-not $Json) { Write-Host "`n=== MODELLI DISPONIBILI IN $ModelsDir ===" -ForegroundColor Cyan }
     $table = foreach ($file in $allGguf) {
         $meta = [GgufModelMeta]::Parse($file.FullName)
         if ($meta) {
             $cfg = Get-HexagonOptimalConfig $meta
             [PSCustomObject]@{
-                NomeFile = $file.Name
-                Arch = $meta.Architecture
-                Quant = $meta.QuantName
-                SizeGB = $cfg.SizeGB
-                Backend = $cfg.Device
-                Split = if ($cfg.TensorSplit) { $cfg.TensorSplit } else { "100%" }
-                Contesto = "$([Math]::Round($cfg.ContextSize / 1024))k"
+                name = $file.Name
+                path = $file.FullName
+                alias = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+                architecture = $meta.Architecture
+                model_name = $meta.ModelName
+                quantization = $meta.QuantName
+                size_gb = $cfg.SizeGB
+                device = $cfg.Device
+                tensor_split = $cfg.TensorSplit
+                context_size = $cfg.ContextSize
+                is_moe = $cfg.IsMoE
+                active_params = $cfg.ActiveParamsEst
+                strategy = $cfg.Strategy
             }
         }
     }
-    $table | Format-Table -AutoSize
+    if ($Json) {
+        @{ models_dir = $ModelsDir; models = @($table) } | ConvertTo-Json -Depth 4
+    } else {
+        $table | Select-Object @{N='NomeFile';E={$_.name}}, @{N='Arch';E={$_.architecture}},
+            @{N='Quant';E={$_.quantization}}, @{N='SizeGB';E={$_.size_gb}}, @{N='Backend';E={$_.device}},
+            @{N='Split';E={if ($_.tensor_split) { $_.tensor_split } else { '100%' }}},
+            @{N='Contesto';E={"$([Math]::Round($_.context_size / 1024))k"}} | Format-Table -AutoSize
+    }
     exit 0
 }
 
@@ -338,11 +381,12 @@ if ($ListOnly) {
 # MODALITA' ROUTER: genera il file INI e avvia multi-modello
 # =============================================================
 if ($Mode -eq "Router") {
-    Write-Host "`n========================================================" -ForegroundColor Cyan
-    Write-Host " MODALITA' ROUTER: Auto-Configurazione per-modello" -ForegroundColor Cyan
-    Write-Host "========================================================" -ForegroundColor Cyan
+    if (-not $Json) {
+        Write-Host "`n========================================================" -ForegroundColor Cyan
+        Write-Host " MODALITA' ROUTER: Auto-Configurazione per-modello" -ForegroundColor Cyan
+        Write-Host "========================================================" -ForegroundColor Cyan
+    }
 
-    # Genera il file INI con preset per-modello
     $iniPath = Join-Path $PSScriptRoot "hexagon-models.ini"
     $iniLines = @()
     $iniLines += "version = 1"
@@ -368,26 +412,33 @@ if ($Mode -eq "Router") {
     $iniLines += ""
 
     $modelCount = 0
+    $planModels = @()
+    $seenAliases = @{}
     foreach ($file in $allGguf) {
+        $alias = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+        if ($seenAliases.ContainsKey($alias)) { continue }
+        $seenAliases[$alias] = $true
         $meta = [GgufModelMeta]::Parse($file.FullName)
         if (-not $meta) { continue }
-        # Salta i file non-modello (clip/mmproj) o troppo piccoli
         if ($meta.Architecture -eq "clip" -or $meta.Architecture -eq "") { continue }
 
         $cfg = Get-HexagonOptimalConfig $meta
-        $alias = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+        $planModels += [PSCustomObject]@{
+            name = $file.Name; path = $file.FullName; alias = $alias
+            architecture = $meta.Architecture; model_name = $meta.ModelName
+            quantization = $meta.QuantName; size_gb = $cfg.SizeGB
+            device = $cfg.Device; tensor_split = $cfg.TensorSplit
+            context_size = $cfg.ContextSize; strategy = $cfg.Strategy
+        }
 
         $iniLines += "# --- $($meta.ModelName) ($($cfg.SizeGB) GB, $($meta.Architecture), $($meta.QuantName)) ---"
         $iniLines += "# Strategia: $($cfg.Strategy)"
         $iniLines += "[$alias]"
         $iniLines += "model = $($file.FullName)"
         $iniLines += "device = $($cfg.Device)"
-        if ($cfg.TensorSplit) {
-            $iniLines += "tensor-split = $($cfg.TensorSplit)"
-        }
+        if ($cfg.TensorSplit) { $iniLines += "tensor-split = $($cfg.TensorSplit)" }
         $iniLines += "ctx-size = $($cfg.ContextSize)"
 
-        # Aggiungi mmproj se presente per modelli multimodali
         $mmprojCandidates = @(
             "mmproj-$($alias)-f16.gguf",
             "mmproj-$($alias)-BF16.gguf",
@@ -403,19 +454,12 @@ if ($Mode -eq "Router") {
 
         $iniLines += ""
         $modelCount++
-
-        Write-Host " [+] $alias" -ForegroundColor Green -NoNewline
-        Write-Host " -> $($cfg.Device)$(if ($cfg.TensorSplit) { " [-ts $($cfg.TensorSplit)]" }) | ctx $([Math]::Round($cfg.ContextSize / 1024))k | $($cfg.SizeGB) GB" -ForegroundColor Gray
+        if (-not $Json) {
+            Write-Host " [+] $alias" -ForegroundColor Green -NoNewline
+            Write-Host " -> $($cfg.Device)$(if ($cfg.TensorSplit) { " [-ts $($cfg.TensorSplit)]" }) | ctx $([Math]::Round($cfg.ContextSize / 1024))k | $($cfg.SizeGB) GB" -ForegroundColor Gray
+        }
     }
 
-    # Scrivi il file INI senza BOM UTF-8 (richiesto dal parser PEG di llama-server)
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllLines($iniPath, $iniLines, $utf8NoBom)
-    Write-Host "`n Generato: $iniPath ($modelCount modelli configurati)" -ForegroundColor Yellow
-    Write-Host " Modelli simultanei in RAM: max $ModelsMax" -ForegroundColor Yellow
-    Write-Host "========================================================`n" -ForegroundColor Cyan
-
-    # Costruisci gli argomenti del router
     $cliArgs = @(
         "--host", $BindHost,
         "--port", $Port,
@@ -427,7 +471,23 @@ if ($Mode -eq "Router") {
         "--models-max", $ModelsMax
     )
 
-    # Configurazione Variabili d'Ambiente FastRPC / Hexagon
+    if ($Json) {
+        @{
+            mode = "Router"; server = $ServerExe; models_dir = $ModelsDir
+            ini_path = $iniPath; ini_content = ($iniLines -join "`n") + "`n"
+            models = @($planModels); cli_args = @($cliArgs)
+            bind_host = $BindHost; port = $Port; models_max = $ModelsMax
+        } | ConvertTo-Json -Depth 5
+        exit 0
+    }
+
+    # I flussi legacy conservano la generazione INI anche durante DryRun.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($iniPath, $iniLines, $utf8NoBom)
+    Write-Host "`n Generato: $iniPath ($modelCount modelli configurati)" -ForegroundColor Yellow
+    Write-Host " Modelli simultanei in RAM: max $ModelsMax" -ForegroundColor Yellow
+    Write-Host "========================================================`n" -ForegroundColor Cyan
+
     $env:ADSP_LIBRARY_PATH = $BinPath
     $env:GGML_HEXAGON_OPBATCH = "512"
     $env:GGML_HEXAGON_VTCM_SIZE = "8M"
@@ -436,7 +496,7 @@ if ($Mode -eq "Router") {
         Write-Host "[DRY RUN] Comando che verrebbe eseguito:" -ForegroundColor Yellow
         Write-Host "& `"$ServerExe`" $($cliArgs -join ' ')" -ForegroundColor White
         Write-Host "`nContenuto hexagon-models.ini:" -ForegroundColor Yellow
-        Get-Content $iniPath | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+        $iniLines | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
         exit 0
     }
 
@@ -479,48 +539,45 @@ if ($Model -ne "") {
         }
     }
 } else {
-    # Default: Consiglia LFM2.5 24B se presente (il piu' veloce a ~46 t/s), altrimenti menu interattivo
+    # Default: Consiglia LFM2.5 24B se presente, altrimenti usa il primo modello.
     $preferred = $allGguf | Where-Object { $_.Name -like "*LFM2.5-24B*" } | Select-Object -First 1
     if ($preferred) {
         $targetModelFile = $preferred
-        Write-Host "Nessun modello specificato. Selezione automatica del modello top-performer: $($preferred.Name)" -ForegroundColor Green
+        if (-not $Json) { Write-Host "Nessun modello specificato. Selezione automatica del modello top-performer: $($preferred.Name)" -ForegroundColor Green }
     } else {
         $targetModelFile = $allGguf[0]
     }
 }
-
-# -------------------------------------------------------------
-# Analisi e Calcolo Parametri per il Modello Selezionato
-# -------------------------------------------------------------
-Write-Host "`n========================================================" -ForegroundColor Cyan
-Write-Host " ANALISI HARDWARE METADATI: $($targetModelFile.Name)" -ForegroundColor Cyan
-Write-Host "========================================================" -ForegroundColor Cyan
 
 $meta = [GgufModelMeta]::Parse($targetModelFile.FullName)
 if (-not $meta) {
     Write-Error "Impossibile analizzare i metadati GGUF del file selezionato."
     exit 1
 }
-
 $cfg = Get-HexagonOptimalConfig $meta
 
-Write-Host " * Nome Modello:      $($meta.ModelName)" -ForegroundColor White
-Write-Host " * Architettura:      $($meta.Architecture) (Tipo: $($cfg.ActiveParamsEst))" -ForegroundColor White
-Write-Host " * Formato Quant:     $($meta.QuantName) (ID: $($meta.FileType))" -ForegroundColor White
-Write-Host " * Dimensione Disco:  $($cfg.SizeGB) GiB" -ForegroundColor White
-Write-Host " * Layer / Teste KV:  $($meta.BlockCount) layer | $($meta.HeadCount) Q-heads | $($meta.HeadCountKv) KV-heads" -ForegroundColor White
-if ($meta.SlidingWindow -gt 0) {
-    Write-Host " * Sliding Window:    Attiva ($($meta.SlidingWindow) token)" -ForegroundColor Magenta
+if (-not $Json) {
+    Write-Host "`n========================================================" -ForegroundColor Cyan
+    Write-Host " ANALISI HARDWARE METADATI: $($targetModelFile.Name)" -ForegroundColor Cyan
+    Write-Host "========================================================" -ForegroundColor Cyan
+    Write-Host " * Nome Modello:      $($meta.ModelName)" -ForegroundColor White
+    Write-Host " * Architettura:      $($meta.Architecture) (Tipo: $($cfg.ActiveParamsEst))" -ForegroundColor White
+    Write-Host " * Formato Quant:     $($meta.QuantName) (ID: $($meta.FileType))" -ForegroundColor White
+    Write-Host " * Dimensione Disco:  $($cfg.SizeGB) GiB" -ForegroundColor White
+    Write-Host " * Layer / Teste KV:  $($meta.BlockCount) layer | $($meta.HeadCount) Q-heads | $($meta.HeadCountKv) KV-heads" -ForegroundColor White
+    if ($meta.SlidingWindow -gt 0) {
+        Write-Host " * Sliding Window:    Attiva ($($meta.SlidingWindow) token)" -ForegroundColor Magenta
+    }
+    Write-Host "--------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host " STRATEGIA DI ACCELERAZIONE OTTIMALE:" -ForegroundColor Yellow
+    Write-Host " * Backend:           $($cfg.Device) $(if ($cfg.TensorSplit) { "[-ts $($cfg.TensorSplit)]" })" -ForegroundColor Green
+    Write-Host " * Motivazione:       $($cfg.Strategy)" -ForegroundColor Gray
+    Write-Host " * Dimensione Ctx:    $($cfg.ContextSize) token ($([Math]::Round($cfg.ContextSize / 1024))k)" -ForegroundColor Green
+    Write-Host " * Vincolo Ctx:       $($cfg.ContextReason)" -ForegroundColor Gray
+    Write-Host " * CPU Oryon Core:    $($cfg.Threads) thread LLM (6 core riservati a Windows 11 / Cline)" -ForegroundColor Green
+    Write-Host " * Batching / FA:     -b $($cfg.BatchSize) -ub $($cfg.UBatchSize) -fa on --context-shift" -ForegroundColor Green
+    Write-Host "========================================================`n" -ForegroundColor Cyan
 }
-Write-Host "--------------------------------------------------------" -ForegroundColor DarkGray
-Write-Host " STRATEGIA DI ACCELERAZIONE OTTIMALE:" -ForegroundColor Yellow
-Write-Host " * Backend:           $($cfg.Device) $(if ($cfg.TensorSplit) { "[-ts $($cfg.TensorSplit)]" })" -ForegroundColor Green
-Write-Host " * Motivazione:       $($cfg.Strategy)" -ForegroundColor Gray
-Write-Host " * Dimensione Ctx:    $($cfg.ContextSize) token ($([Math]::Round($cfg.ContextSize / 1024))k)" -ForegroundColor Green
-Write-Host " * Vincolo Ctx:       $($cfg.ContextReason)" -ForegroundColor Gray
-Write-Host " * CPU Oryon Core:    $($cfg.Threads) thread LLM (6 core riservati a Windows 11 / Cline)" -ForegroundColor Green
-Write-Host " * Batching / FA:     -b $($cfg.BatchSize) -ub $($cfg.UBatchSize) -fa on --context-shift" -ForegroundColor Green
-Write-Host "========================================================`n" -ForegroundColor Cyan
 
 # -------------------------------------------------------------
 # Costruzione Argomenti per llama-server.exe
@@ -550,6 +607,30 @@ if ($cfg.TensorSplit) {
 }
 
 $cliArgs += @("-m", $targetModelFile.FullName, "--alias", [System.IO.Path]::GetFileNameWithoutExtension($targetModelFile.Name))
+
+if ($Json) {
+    @{
+        mode = "Direct"; server = $ServerExe; model = $targetModelFile.FullName
+        alias = [System.IO.Path]::GetFileNameWithoutExtension($targetModelFile.Name)
+        metadata = [PSCustomObject]@{
+            name = $meta.ModelName; architecture = $meta.Architecture
+            quantization = $meta.QuantName; file_type = $meta.FileType
+            size_gb = $cfg.SizeGB; context_length = $meta.ContextLength
+            block_count = $meta.BlockCount; head_count = $meta.HeadCount
+            head_count_kv = $meta.HeadCountKv; sliding_window = $meta.SlidingWindow
+            expert_count = $meta.ExpertCount; expert_used_count = $meta.ExpertUsedCount
+        }
+        config = [PSCustomObject]@{
+            device = $cfg.Device; tensor_split = $cfg.TensorSplit
+            context_size = $cfg.ContextSize; strategy = $cfg.Strategy
+            context_reason = $cfg.ContextReason; threads = $cfg.Threads
+            threads_batch = $cfg.ThreadsBatch; batch_size = $cfg.BatchSize
+            ubatch_size = $cfg.UBatchSize
+        }
+        cli_args = @($cliArgs); bind_host = $BindHost; port = $Port
+    } | ConvertTo-Json -Depth 5
+    exit 0
+}
 
 # -------------------------------------------------------------
 # Configurazione Variabili d'Ambiente FastRPC / Hexagon
